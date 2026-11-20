@@ -105,7 +105,7 @@ async function analyzeWithGemini(params: {
   }
 
   const promptText = [
-    `Você é o Agente de IA oficial do grupo de WhatsApp do HOLD BAR SPORTS & MUSIC.`,
+    `Você é o Agente de IA oficial do grupo de WhatsApp da HOLD PRÊMIOS.`,
     `Analise a mensagem enviada no grupo e o comprovante de pagamento anexo (se houver).`,
     `Regras da rifa:`,
     `- Os números válidos vão de 1 a 100.`,
@@ -370,7 +370,7 @@ async function startServer() {
   }
 
   app.listen(PORT, "0.0.0.0", () => {
-    console.log(`Hold Bar Rifas server running on http://0.0.0.0:${PORT}`);
+    console.log(`Hold Prêmios Rifas server running on http://0.0.0.0:${PORT}`);
   });
 }
 

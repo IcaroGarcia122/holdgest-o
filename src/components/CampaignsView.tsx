@@ -5,6 +5,7 @@ import {
   Pencil,
   Archive,
   CheckCircle2,
+  RotateCcw,
 } from "lucide-react";
 import { RaffleCampaign } from "../types/raffle";
 import { formatCurrency, formatShortDate } from "../utils/formatters";
@@ -23,6 +24,7 @@ interface CampaignsViewProps {
   onNewCampaign: () => void;
   onEditCampaign: (campaign: RaffleCampaign) => void;
   onCloseCampaign: (campaignId: string) => void;
+  onReactivateCampaign: (campaignId: string) => void;
   onOpenList100: (campaignId: string) => void;
 }
 
@@ -32,6 +34,7 @@ export const CampaignsView: React.FC<CampaignsViewProps> = ({
   onNewCampaign,
   onEditCampaign,
   onCloseCampaign,
+  onReactivateCampaign,
   onOpenList100,
 }) => {
   return (
@@ -127,7 +130,7 @@ export const CampaignsView: React.FC<CampaignsViewProps> = ({
                     <Pencil className="w-4 h-4" />
                   </button>
 
-                  {isActive && (
+                  {isActive ? (
                     <button
                       type="button"
                       onClick={() => onCloseCampaign(campaign.id)}
@@ -136,6 +139,16 @@ export const CampaignsView: React.FC<CampaignsViewProps> = ({
                     >
                       <Archive className="w-3.5 h-3.5" />
                       <span>Encerrar</span>
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => onReactivateCampaign(campaign.id)}
+                      title="Reativar esta rifa caso tenha sido encerrada por engano"
+                      className="inline-flex items-center gap-1.5 px-4 py-2 rounded-full bg-emerald-500/15 hover:bg-emerald-500 border border-emerald-500/35 text-xs font-semibold text-emerald-400 hover:text-black transition-colors"
+                    >
+                      <RotateCcw className="w-3.5 h-3.5" />
+                      <span>Reativar Rifa</span>
                     </button>
                   )}
                 </div>

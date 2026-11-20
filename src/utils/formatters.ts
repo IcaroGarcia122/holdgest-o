@@ -66,7 +66,7 @@ export function buildWhatsAppListText(
   rows: QuotaRowInfo[]
 ): string {
   const header = [
-    `*HOLD BAR SPORTS & MUSIC — ${campaign.title.toUpperCase()}*`,
+    `*HOLD PRÊMIOS — ${campaign.title.toUpperCase()}*`,
     `📅 ${campaign.weekLabel} | 💰 ${formatCurrency(campaign.ticketPrice)} por número`,
     `🏆 *10 Prêmios na mesma rifa!*`,
     ``,
@@ -120,7 +120,7 @@ export function buildWhatsAppReceiptText(
       : "⏳ Reservado (aguardando comprovante Pix)";
 
   return [
-    `*HOLD BAR — Confirmação na Rifa*`,
+    `*HOLD PRÊMIOS — Confirmação na Rifa*`,
     `Rifa: *${campaign.title}*`,
     `Nome: ${order.buyerName}`,
     `Números: *${formattedNums}*`,
@@ -138,9 +138,9 @@ export function buildWhatsAppWinnerText(
 ): string {
   return [
     `🏆 *PARABÉNS, ${buyerName.toUpperCase()}!*`,
-    `Você ganhou o *${prizePosition}º Prêmio (${prizeTitle})* na rifa *${campaignTitle}* do HOLD BAR com o número *${quotaLabel}*!`,
+    `Você ganhou o *${prizePosition}º Prêmio (${prizeTitle})* na rifa *${campaignTitle}* da HOLD PRÊMIOS com o número *${quotaLabel}*!`,
     ``,
-    `Responda esta mensagem para combinarmos a retirada no Hold Bar ou envio.`,
+    `Responda esta mensagem para combinarmos a retirada na Hold Prêmios ou envio.`,
   ].join("\n");
 }
 
@@ -213,7 +213,7 @@ export function exportOrdersToCSV(
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
   link.href = url;
-  link.download = `hold-bar-rifa-${new Date().toISOString().slice(0, 10)}.csv`;
+  link.download = `hold-premios-rifa-${new Date().toISOString().slice(0, 10)}.csv`;
   document.body.appendChild(link);
   link.click();
   document.body.removeChild(link);

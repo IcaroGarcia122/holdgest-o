@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import {
   ArrowUpRight,
   Calendar,
@@ -61,20 +61,20 @@ export const OverviewView: React.FC<OverviewViewProps> = ({
   onSelectCampaign,
   onCreateNewRaffle,
 }) => {
-  const [selectedCampaignId, setSelectedCampaignId] = useState<string>(
-    activeCampaign?.id ?? campaigns[0]?.id ?? ""
-  );
   const [hoveredBarIdx, setHoveredBarIdx] = useState<number | null>(null);
   const [receiptOrder, setReceiptOrder] = useState<RaffleOrder | null>(null);
 
+  // Dashboard displays ONLY an active weekly raffle (never closed raffles)
   const displayedCampaign = useMemo(
-    () =>
-      campaigns.find((c) => c.id === selectedCampaignId) ??
-      activeCampaign ??
-      campaigns[0] ??
-      null,
-    [campaigns, selectedCampaignId, activeCampaign]
+    () => (activeCampaign && activeCampaign.status === "ativa" ? activeCampaign : null),
+    [activeCampaign]
   );
+
+  useEffect(() => {
+    if (displayedCampaign) {
+      onSelectCampaign(displayedCampaign.id);
+    }
+  }, [displayedCampaign, onSelectCampaign]);
 
   const stats = useMemo(
     () =>
@@ -124,14 +124,13 @@ export const OverviewView: React.FC<OverviewViewProps> = ({
 
   const recentOrders = useMemo(
     () =>
-      [...orders]
-        .filter((o) => o.status !== "cancelado")
+      [...campaignOrders]
         .sort(
           (a, b) =>
             new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
         )
         .slice(0, 5),
-    [orders]
+    [campaignOrders]
   );
 
   const campaignLookup = useMemo(
@@ -250,29 +249,27 @@ export const OverviewView: React.FC<OverviewViewProps> = ({
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pt-1">
         <div>
           <h1 className="text-2xl sm:text-[28px] font-semibold tracking-tight text-white">
-            Painel Hold Bar
+            Painel Hold Prêmios
           </h1>
           <p className="text-xs sm:text-sm text-zinc-400 mt-1">
-            Resumo da rifa semanal, números comprados na Lista 1–100 e estoque
-            de prêmios.
+            Resumo da rifa semanal ativa, números comprados na Lista 1–100 e
+            estoque de prêmios.
           </p>
         </div>
 
         <div className="flex items-center gap-2.5 self-start sm:self-auto">
-          <select
-            value={displayedCampaign?.id ?? ""}
-            onChange={(e) => {
-              setSelectedCampaignId(e.target.value);
-              onSelectCampaign(e.target.value);
-            }}
-            className="px-4 py-2 rounded-full bg-[#121216] border border-[#22222B] text-xs font-medium text-white focus:outline-none focus:border-[#FF7900]"
-          >
-            {campaigns.map((c) => (
-              <option key={c.id} value={c.id}>
-                {c.code} · {c.status === "ativa" ? "Rifa Atual" : "Encerrada"}
-              </option>
-            ))}
-          </select>
+          <div className="px-4 py-2 rounded-full bg-[#121216] border border-[#22222B] text-xs font-medium text-white flex items-center gap-2">
+            <span
+              className={`w-2 h-2 rounded-full ${
+                displayedCampaign ? "bg-emerald-400" : "bg-zinc-600"
+              }`}
+            />
+            <span>
+              {displayedCampaign
+                ? `${displayedCampaign.code} · Rifa Atual`
+                : "Nenhuma rifa ativa"}
+            </span>
+          </div>
 
           <button
             type="button"
@@ -287,19 +284,134 @@ export const OverviewView: React.FC<OverviewViewProps> = ({
       </div>
 
       {!displayedCampaign ? (
-        <section className="rounded-[22px] bg-[#121216] border border-[#1E1E26] p-12 text-center">
-          <Trophy className="w-8 h-8 text-[#FF7900] mx-auto mb-3" />
-          <h2 className="text-lg font-semibold text-white">
-            Nenhuma rifa semanal ativa
-          </h2>
-          <button
-            type="button"
-            onClick={onCreateNewRaffle}
-            className="mt-4 px-5 py-2.5 rounded-full bg-[#FF7900] hover:bg-[#FFB000] text-black text-xs font-semibold transition-colors"
-          >
-            Criar Rifa da Semana
-          </button>
-        </section>
+        <div className="space-y-5">
+          <section className="rounded-[22px] bg-[#121216] border border-[#1E1E26] p-10 text-center">
+            <Trophy className="w-8 h-8 text-[#FF7900] mx-auto mb-3" />
+            <h2 className="text-lg font-semibold text-white">
+              Nenhuma rifa semanal ativa no momento
+            </h2>
+            <p className="text-xs text-zinc-400 mt-1 max-w-md mx-auto">
+              Rifas encerradas não ficam visíveis na dashboard geral. Crie uma
+              nova rifa da semana ou reative uma rifa no histórico.
+            </p>
+            <div className="mt-5 flex flex-wrap items-center justify-center gap-3">
+              <button
+                type="button"
+                onClick={onCreateNewRaffle}
+                className="px-5 py-2.5 rounded-full bg-[#FF7900] hover:bg-[#FFB000] text-black text-xs font-semibold transition-colors"
+              >
+                Criar Rifa da Semana
+              </button>
+              <button
+                type="button"
+                onClick={() => onNavigate("campaigns")}
+                className="px-5 py-2.5 rounded-full bg-[#18181F] hover:bg-[#22222B] border border-[#262630] text-white text-xs font-medium transition-colors"
+              >
+                Ver / Reativar no Histórico
+              </button>
+            </div>
+          </section>
+
+          {/* Stock still synced even when no raffle is active */}
+          <section className="grid grid-cols-1 xl:grid-cols-12 gap-5 items-stretch">
+            <div className="xl:col-span-4 rounded-[22px] bg-[#121216] border border-[#1E1E26] p-6 flex flex-col justify-between min-h-[180px]">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-xs font-medium text-zinc-400">
+                  Prêmios Investidos (Estoque)
+                </span>
+                <button
+                  type="button"
+                  onClick={() => onNavigate("inventory")}
+                  aria-label="Gerenciar estoque de prêmios"
+                  className="w-9 h-9 rounded-full bg-[#1C1C23] hover:bg-[#FF7900] text-zinc-300 hover:text-black flex items-center justify-center transition-colors shrink-0"
+                >
+                  <ArrowUpRight className="w-4 h-4" />
+                </button>
+              </div>
+              <div className="flex flex-wrap items-center gap-2.5 my-2">
+                <span className="font-mono-tabular font-bold text-2xl sm:text-[26px] tracking-tight text-white">
+                  {formatCurrency(stockSummary.totalInvested)}
+                </span>
+                <span className="px-2 py-0.5 rounded-full bg-[#FFB000]/15 text-[#FFB000] font-mono-tabular text-[11px] font-semibold">
+                  {stockSummary.totalItems}{" "}
+                  {stockSummary.totalItems === 1 ? "item" : "itens"} ·{" "}
+                  {stockSummary.totalUnits} un.
+                </span>
+              </div>
+              <div className="text-xs text-zinc-500">
+                Sincronizado com o Estoque de Prêmios
+              </div>
+            </div>
+
+            <div className="xl:col-span-8 rounded-[22px] bg-[#121216] border border-[#1E1E26] p-6 flex flex-col justify-between min-h-[180px]">
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <h2 className="text-base font-semibold text-white">
+                    Estoque por Categoria
+                  </h2>
+                  <p className="text-xs text-zinc-400 mt-0.5">
+                    Distribuição do capital investido em prêmios
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => onNavigate("inventory")}
+                  aria-label="Gerenciar estoque"
+                  className="w-10 h-10 rounded-full bg-white hover:bg-[#FF7900] text-black flex items-center justify-center transition-colors shrink-0"
+                >
+                  <ArrowUpRight className="w-4 h-4" />
+                </button>
+              </div>
+              <div className="mt-4 flex flex-col sm:flex-row items-center gap-6">
+                <div className="relative w-28 h-28 shrink-0 flex items-center justify-center">
+                  <svg viewBox="0 0 132 132" className="w-full h-full -rotate-90">
+                    <circle cx="66" cy="66" r="52" fill="none" stroke="#1C1C23" strokeWidth="18" />
+                    {donutSegments.map((seg) => (
+                      <circle
+                        key={seg.name}
+                        cx="66"
+                        cy="66"
+                        r="52"
+                        fill="none"
+                        stroke={seg.color}
+                        strokeWidth="18"
+                        strokeDasharray={seg.dasharray}
+                        strokeDashoffset={seg.dashoffset}
+                        strokeLinecap="butt"
+                      />
+                    ))}
+                  </svg>
+                  <div className="absolute inset-0 flex flex-col items-center justify-center text-center">
+                    <span className="text-[10px] text-zinc-400">Estoque</span>
+                    <span className="font-mono-tabular text-xs font-bold text-white">
+                      {stockSummary.totalUnits} un.
+                    </span>
+                  </div>
+                </div>
+                {categoryBreakdown.length === 0 ? (
+                  <p className="text-xs text-zinc-400">
+                    Nenhum prêmio cadastrado no estoque.
+                  </p>
+                ) : (
+                  <div className="flex-1 w-full space-y-2">
+                    {categoryBreakdown.map((cat) => (
+                      <div key={cat.name} className="flex items-center justify-between gap-3 text-xs">
+                        <div className="flex items-center gap-2 min-w-0">
+                          <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: cat.color }} />
+                          <span className="text-zinc-300 truncate">{cat.name}</span>
+                        </div>
+                        <div className="flex items-center gap-2.5 font-mono-tabular shrink-0">
+                          <span className="text-zinc-500">{cat.percent}%</span>
+                          <span className="text-white font-medium">{formatCurrency(cat.value)}</span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          </section>
+        </div>
       ) : (
         <>
           {/* BENTO ROW 1: 2x2 KPI Cards (6 cols) + Revenue Bar Chart (6 cols) */}
@@ -339,11 +451,11 @@ export const OverviewView: React.FC<OverviewViewProps> = ({
                 </div>
               </div>
 
-              {/* Card 2: Invested Prizes */}
+              {/* Card 2: Invested Prizes (Stock + Active Raffle) */}
               <div className="rounded-[22px] bg-[#121216] border border-[#1E1E26] p-5 flex flex-col justify-between min-h-[162px]">
                 <div className="flex items-center justify-between gap-2">
                   <span className="text-xs font-medium text-zinc-400">
-                    Prêmios Investidos
+                    Prêmios Investidos (Estoque)
                   </span>
                   <button
                     type="button"
@@ -357,17 +469,19 @@ export const OverviewView: React.FC<OverviewViewProps> = ({
 
                 <div className="flex flex-wrap items-center gap-2.5 my-2">
                   <span className="font-mono-tabular font-bold text-2xl sm:text-[26px] tracking-tight text-white">
-                    {formatCurrency(stats.investedPrizesValue)}
+                    {formatCurrency(stockSummary.totalInvested)}
                   </span>
                   <span className="px-2 py-0.5 rounded-full bg-[#FFB000]/15 text-[#FFB000] font-mono-tabular text-[11px] font-semibold">
-                    10 prêmios
+                    {stockSummary.totalItems}{" "}
+                    {stockSummary.totalItems === 1 ? "item" : "itens"} ·{" "}
+                    {stockSummary.totalUnits} un.
                   </span>
                 </div>
 
                 <div className="text-xs text-zinc-500">
-                  Estoque total:{" "}
+                  Na rifa atual:{" "}
                   <span className="font-mono-tabular text-zinc-300">
-                    {formatCurrency(stockSummary.totalInvested)}
+                    {formatCurrency(stats.investedPrizesValue)}
                   </span>
                 </div>
               </div>
@@ -658,30 +772,50 @@ export const OverviewView: React.FC<OverviewViewProps> = ({
                 </div>
 
                 {/* Category Legend */}
-                <div className="flex-1 w-full space-y-2">
-                  {categoryBreakdown.map((cat) => (
-                    <div
-                      key={cat.name}
-                      className="flex items-center justify-between gap-3 text-xs"
+                {categoryBreakdown.length === 0 ? (
+                  <div className="flex-1 w-full text-center sm:text-left py-2 space-y-2">
+                    <p className="text-xs font-medium text-zinc-300">
+                      Nenhum prêmio cadastrado no estoque
+                    </p>
+                    <p className="text-[11px] text-zinc-500">
+                      Cadastre prêmios em Estoque para visualizar a distribuição
+                      por categoria e o capital investido.
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => onNavigate("inventory")}
+                      className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full bg-[#1B1B22] hover:bg-[#FF7900] text-zinc-200 hover:text-black text-[11px] font-semibold transition-colors"
                     >
-                      <div className="flex items-center gap-2 min-w-0">
-                        <span
-                          className="w-2.5 h-2.5 rounded-full shrink-0"
-                          style={{ backgroundColor: cat.color }}
-                        />
-                        <span className="text-zinc-300 truncate">
-                          {cat.name}
-                        </span>
+                      <span>Abrir Estoque</span>
+                      <ArrowUpRight className="w-3 h-3" />
+                    </button>
+                  </div>
+                ) : (
+                  <div className="flex-1 w-full space-y-2">
+                    {categoryBreakdown.map((cat) => (
+                      <div
+                        key={cat.name}
+                        className="flex items-center justify-between gap-3 text-xs"
+                      >
+                        <div className="flex items-center gap-2 min-w-0">
+                          <span
+                            className="w-2.5 h-2.5 rounded-full shrink-0"
+                            style={{ backgroundColor: cat.color }}
+                          />
+                          <span className="text-zinc-300 truncate">
+                            {cat.name}
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-2.5 font-mono-tabular shrink-0">
+                          <span className="text-zinc-500">{cat.percent}%</span>
+                          <span className="text-white font-medium">
+                            {formatCurrency(cat.value)}
+                          </span>
+                        </div>
                       </div>
-                      <div className="flex items-center gap-2.5 font-mono-tabular shrink-0">
-                        <span className="text-zinc-500">{cat.percent}%</span>
-                        <span className="text-white font-medium">
-                          {formatCurrency(cat.value)}
-                        </span>
-                      </div>
-                    </div>
-                  ))}
-                </div>
+                    ))}
+                  </div>
+                )}
               </div>
             </div>
           </section>

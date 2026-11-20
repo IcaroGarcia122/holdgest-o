@@ -22,12 +22,23 @@ import {
   generateAuditHash,
 } from "../utils/formatters";
 
-const STORAGE_KEY = "hold_bar_rifas_state_v3";
+const STORAGE_KEY = "hold_premios_rifas_state_v1";
+const LEGACY_STORAGE_KEY = "hold_bar_rifas_state_v3";
 
 function loadInitialState(): StoreState {
   if (typeof window === "undefined") return INITIAL_SEED_STATE;
   try {
-    const raw = window.localStorage.getItem(STORAGE_KEY);
+    let raw = window.localStorage.getItem(STORAGE_KEY);
+    if (!raw) {
+      const legacyRaw = window.localStorage.getItem(LEGACY_STORAGE_KEY);
+      if (legacyRaw) {
+        raw = legacyRaw
+          .replace(/HOLD BAR SPORTS & MUSIC/g, "HOLD PRÊMIOS")
+          .replace(/Hold Bar Sports & Music/g, "Hold Prêmios")
+          .replace(/HOLD BAR/g, "HOLD PRÊMIOS")
+          .replace(/Hold Bar/gi, "Hold Prêmios");
+      }
+    }
     if (!raw) return INITIAL_SEED_STATE;
     const parsed = JSON.parse(raw) as StoreState;
     if (
@@ -69,10 +80,7 @@ export function useRaffleStore() {
   }, [state]);
 
   const activeWeeklyCampaign = useMemo(
-    () =>
-      state.campaigns.find((c) => c.status === "ativa") ??
-      state.campaigns[0] ??
-      null,
+    () => state.campaigns.find((c) => c.status === "ativa") ?? null,
     [state.campaigns]
   );
 
@@ -183,7 +191,7 @@ export function useRaffleStore() {
 
       if (typeof window !== "undefined" && "Notification" in window) {
         if (Notification.permission === "granted") {
-          new Notification("Rifa Completa (100/100) — HOLD BAR", {
+          new Notification("Rifa Completa (100/100) — HOLD PRÊMIOS", {
             body: `A rifa "${campaign.title}" atingiu 100 números confirmados e está pronta para o sorteio dos 10 prêmios!`,
             icon: "/assets/images/logo_hold_ouro.webp",
           });
@@ -300,6 +308,21 @@ export function useRaffleStore() {
         c.id === id ? { ...c, status: "encerrada" } : c
       ),
     }));
+    setCompletionAlertCampaign((prev) => (prev?.id === id ? null : prev));
+  }, []);
+
+  const reactivateCampaign = useCallback((id: string) => {
+    setState((prev) => ({
+      ...prev,
+      campaigns: prev.campaigns.map((c) =>
+        c.id === id
+          ? { ...c, status: "ativa" }
+          : c.status === "ativa"
+          ? { ...c, status: "encerrada" }
+          : c
+      ),
+    }));
+    setCompletionAlertCampaign(null);
   }, []);
 
   const createOrder = useCallback(
@@ -471,9 +494,8 @@ export function useRaffleStore() {
 
   const updatePrizeStockItem = useCallback(
     (id: string, patch: Partial<PrizeStockItem>) => {
-      setState((prev) => ({
-        ...prev,
-        prizeStock: prev.prizeStock.map((item) => {
+      setState((prev) => {
+        const nextStock = prev.prizeStock.map((item) => {
           if (item.id !== id) return item;
           const nextQty =
             patch.quantity !== undefined ? Math.max(0, patch.quantity) : item.quantity;
@@ -482,8 +504,42 @@ export function useRaffleStore() {
               ? "esgotado"
               : patch.status ?? (item.status === "esgotado" ? "disponivel" : item.status);
           return { ...item, ...patch, quantity: nextQty, status: nextStatus };
-        }),
-      }));
+        });
+
+        const updatedItem = nextStock.find((item) => item.id === id);
+        const nextCampaigns =
+          updatedItem &&
+          (patch.name !== undefined || patch.investedValue !== undefined)
+            ? prev.campaigns.map((camp) =>
+                camp.status !== "ativa"
+                  ? camp
+                  : {
+                      ...camp,
+                      prizes: camp.prizes.map((p) =>
+                        p.stockItemId === id
+                          ? {
+                              ...p,
+                              title:
+                                patch.name !== undefined
+                                  ? updatedItem.name
+                                  : p.title,
+                              investedValue:
+                                patch.investedValue !== undefined
+                                  ? updatedItem.investedValue
+                                  : p.investedValue,
+                            }
+                          : p
+                      ),
+                    }
+              )
+            : prev.campaigns;
+
+        return {
+          ...prev,
+          prizeStock: nextStock,
+          campaigns: nextCampaigns,
+        };
+      });
     },
     []
   );
@@ -492,6 +548,18 @@ export function useRaffleStore() {
     setState((prev) => ({
       ...prev,
       prizeStock: prev.prizeStock.filter((item) => item.id !== id),
+      campaigns: prev.campaigns.map((camp) =>
+        camp.status !== "ativa"
+          ? camp
+          : {
+              ...camp,
+              prizes: camp.prizes.map((p) =>
+                p.stockItemId === id
+                  ? { ...p, stockItemId: undefined, investedValue: 0 }
+                  : p
+              ),
+            }
+      ),
     }));
   }, []);
 
@@ -621,6 +689,7 @@ export function useRaffleStore() {
     createCampaign,
     updateCampaign,
     closeCampaign,
+    reactivateCampaign,
     createOrder,
     confirmOrderPayment,
     attachReceiptToOrder,

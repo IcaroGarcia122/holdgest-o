@@ -126,8 +126,12 @@ export const RaffleList100View: React.FC<RaffleList100ViewProps> = ({
   if (!campaign) {
     return (
       <div className="rounded-[22px] bg-[#121216] border border-[#1E1E26] p-12 text-center">
-        <p className="text-sm text-zinc-400">
-          Nenhuma rifa criada. Clique em Nova Rifa para iniciar a semana.
+        <p className="text-sm font-medium text-white">
+          Nenhuma rifa semanal ativa no momento
+        </p>
+        <p className="text-xs text-zinc-400 mt-1">
+          Clique em Nova Rifa para iniciar a semana ou reative uma rifa em
+          Rifas & Histórico.
         </p>
       </div>
     );

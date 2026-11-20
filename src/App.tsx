@@ -32,6 +32,7 @@ export default function App() {
     createCampaign,
     updateCampaign,
     closeCampaign,
+    reactivateCampaign,
     createOrder,
     confirmOrderPayment,
     attachReceiptToOrder,
@@ -45,7 +46,7 @@ export default function App() {
 
   const [activeView, setActiveView] = useState<ActiveView>("overview");
   const [selectedCampaignId, setSelectedCampaignId] = useState<string>(
-    () => activeWeeklyCampaign?.id ?? campaigns[0]?.id ?? ""
+    () => activeWeeklyCampaign?.id ?? ""
   );
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [isCampaignModalOpen, setIsCampaignModalOpen] = useState(false);
@@ -55,13 +56,15 @@ export default function App() {
   const [copiedCompleteAlert, setCopiedCompleteAlert] = useState(false);
 
   useEffect(() => {
-    if (
-      activeWeeklyCampaign &&
-      !campaigns.some((c) => c.id === selectedCampaignId)
-    ) {
-      setSelectedCampaignId(activeWeeklyCampaign.id);
-    }
-  }, [activeWeeklyCampaign, campaigns, selectedCampaignId]);
+    setSelectedCampaignId((prev) => {
+      if (activeWeeklyCampaign) {
+        const current = campaigns.find((c) => c.id === prev);
+        if (!current) return activeWeeklyCampaign.id;
+        return prev;
+      }
+      return prev;
+    });
+  }, [activeWeeklyCampaign, campaigns]);
 
   useEffect(() => {
     let cancelled = false;
@@ -138,8 +141,15 @@ export default function App() {
   ]);
 
   const pendingOrdersCount = useMemo(
-    () => orders.filter((o) => o.status === "pendente").length,
-    [orders]
+    () =>
+      activeWeeklyCampaign
+        ? orders.filter(
+            (o) =>
+              o.campaignId === activeWeeklyCampaign.id &&
+              o.status === "pendente"
+          ).length
+        : 0,
+    [orders, activeWeeklyCampaign]
   );
 
   const activeStats = useMemo(
@@ -154,7 +164,6 @@ export default function App() {
     () =>
       campaigns.find((c) => c.id === selectedCampaignId) ??
       activeWeeklyCampaign ??
-      campaigns[0] ??
       null,
     [campaigns, selectedCampaignId, activeWeeklyCampaign]
   );
@@ -344,7 +353,14 @@ export default function App() {
               getCampaignStats={getCampaignStats}
               onNewCampaign={handleOpenNewCampaign}
               onEditCampaign={handleEditCampaign}
-              onCloseCampaign={closeCampaign}
+              onCloseCampaign={(id) => {
+                closeCampaign(id);
+                setSelectedCampaignId((prev) => (prev === id ? "" : prev));
+              }}
+              onReactivateCampaign={(id) => {
+                reactivateCampaign(id);
+                setSelectedCampaignId(id);
+              }}
               onOpenList100={(id) => {
                 setSelectedCampaignId(id);
                 setActiveView("list100");

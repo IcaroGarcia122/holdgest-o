@@ -51,23 +51,26 @@ export const TopBar: React.FC<TopBarProps> = ({
       view: ActiveView;
     }[] = [];
 
-    for (const o of orders) {
-      if (o.status === "cancelado") continue;
-      if (
-        o.buyerName.toLowerCase().includes(q) ||
-        o.quotas.some((n) => formatQuotaNumber(n).includes(q))
-      ) {
-        matches.push({
-          id: `o-${o.id}`,
-          label: o.buyerName,
-          sub: `Lista 1–100 · Nº ${o.quotas
-            .slice(0, 4)
-            .map(formatQuotaNumber)
-            .join(", ")}${o.quotas.length > 4 ? "..." : ""}`,
-          view: "list100",
-        });
+    if (activeCampaign) {
+      for (const o of orders) {
+        if (o.status === "cancelado" || o.campaignId !== activeCampaign.id)
+          continue;
+        if (
+          o.buyerName.toLowerCase().includes(q) ||
+          o.quotas.some((n) => formatQuotaNumber(n).includes(q))
+        ) {
+          matches.push({
+            id: `o-${o.id}`,
+            label: o.buyerName,
+            sub: `Lista 1–100 · Nº ${o.quotas
+              .slice(0, 4)
+              .map(formatQuotaNumber)
+              .join(", ")}${o.quotas.length > 4 ? "..." : ""}`,
+            view: "list100",
+          });
+        }
+        if (matches.length >= 4) break;
       }
-      if (matches.length >= 4) break;
     }
 
     for (const item of prizeStock) {
@@ -83,7 +86,7 @@ export const TopBar: React.FC<TopBarProps> = ({
     }
 
     return matches;
-  }, [query, orders, prizeStock]);
+  }, [query, orders, prizeStock, activeCampaign]);
 
   return (
     <header className="sticky top-0 z-30 px-4 sm:px-6 lg:px-8 pt-4 pb-2 bg-[#070709]">
@@ -153,7 +156,7 @@ export const TopBar: React.FC<TopBarProps> = ({
 
           <span className="hidden md:inline text-xs font-medium text-zinc-400 whitespace-nowrap capitalize">
             {formattedToday}
-            {activeCampaign ? ` · ${activeCampaign.weekLabel}` : ""}
+            {activeCampaign ? ` · ${activeCampaign.weekLabel}` : " · Sem rifa ativa"}
           </span>
         </div>
 

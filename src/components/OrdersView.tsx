@@ -46,7 +46,7 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
   const [statusFilter, setStatusFilter] = useState<"todos" | OrderStatus>(
     "todos"
   );
-  const [campaignFilter, setCampaignFilter] = useState<string>("todas");
+  const [campaignFilter, setCampaignFilter] = useState<string>("ativa");
   const [search, setSearch] = useState("");
   const [viewingReceiptOrder, setViewingReceiptOrder] =
     useState<RaffleOrder | null>(null);
@@ -66,11 +66,17 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
           new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
       )
       .filter((o) => {
-        if (statusFilter !== "todos" && o.status !== statusFilter) return false;
-        if (campaignFilter !== "todas" && o.campaignId !== campaignFilter)
-          return false;
-        if (!q) return true;
         const camp = campaignMap.get(o.campaignId);
+        if (statusFilter !== "todos" && o.status !== statusFilter) return false;
+        if (campaignFilter === "ativa") {
+          if (!camp || camp.status !== "ativa") return false;
+        } else if (
+          campaignFilter !== "todas" &&
+          o.campaignId !== campaignFilter
+        ) {
+          return false;
+        }
+        if (!q) return true;
         return (
           o.buyerName.toLowerCase().includes(q) ||
           o.buyerPhone.toLowerCase().includes(q) ||
@@ -172,10 +178,11 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
             onChange={(e) => setCampaignFilter(e.target.value)}
             className="px-4 py-2 rounded-full bg-[#121216] border border-[#1E1E26] text-xs text-white focus:outline-none focus:border-[#FF7900]"
           >
-            <option value="todas">Todas as rifas</option>
+            <option value="ativa">Rifa ativa atual</option>
+            <option value="todas">Todas as rifas (incl. encerradas)</option>
             {campaigns.map((c) => (
               <option key={c.id} value={c.id}>
-                {c.title}
+                {c.title} ({c.status === "ativa" ? "Ativa" : "Encerrada"})
               </option>
             ))}
           </select>

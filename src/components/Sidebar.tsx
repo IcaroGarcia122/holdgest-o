@@ -77,12 +77,12 @@ export const Sidebar: React.FC<SidebarProps> = ({
         <button
           type="button"
           onClick={() => handleNav("overview")}
-          title="HOLD BAR — Visão Geral"
+          title="HOLD PRÊMIOS — Visão Geral"
           className="w-11 h-11 rounded-2xl bg-[#141419] border border-[#24242E] flex items-center justify-center hover:border-[#FF7900] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FF7900]"
         >
           <img
             src="/assets/images/logo_hold_ouro.webp"
-            alt="Hold Bar"
+            alt="Hold Prêmios"
             className="w-7 h-7 object-contain"
             referrerPolicy="no-referrer"
           />
@@ -137,12 +137,12 @@ export const Sidebar: React.FC<SidebarProps> = ({
               <div className="flex items-center gap-2.5">
                 <img
                   src="/assets/images/logo_hold_ouro.webp"
-                  alt="Hold Bar"
+                  alt="Hold Prêmios"
                   className="w-8 h-8 object-contain"
                   referrerPolicy="no-referrer"
                 />
                 <span className="font-condensed font-black text-lg uppercase text-white">
-                  HOLD <span className="text-[#FF7900]">BAR</span>
+                  HOLD <span className="text-[#FF7900]">PRÊMIOS</span>
                 </span>
               </div>
               <button

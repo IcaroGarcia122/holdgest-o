@@ -64,7 +64,7 @@ export const CampaignModal: React.FC<CampaignModalProps> = ({
           : DEFAULT_TEN_PRIZES
       );
     } else {
-      setTitle("Mega Rifa Hold Bar #47 (10 Prêmios)");
+      setTitle("Mega Rifa Hold Prêmios #47 (10 Prêmios)");
       setWeekLabel("Semana 47 · 18 a 24 Nov");
       setWhatsappGroupName(defaultGroupName);
       setImage(PRIZE_GALLERY[0].image);
@@ -133,7 +133,7 @@ export const CampaignModal: React.FC<CampaignModalProps> = ({
 
     const sanitizedPrizes = prizes.map((p, idx) => ({
       position: idx + 1,
-      title: p.title.trim() || `${idx + 1}º Prêmio Hold Bar`,
+      title: p.title.trim() || `${idx + 1}º Prêmio Hold Prêmios`,
       investedValue: Number(p.investedValue) || 0,
       stockItemId: p.stockItemId,
     }));
@@ -192,7 +192,7 @@ export const CampaignModal: React.FC<CampaignModalProps> = ({
 
           <div>
             <label className="block text-xs font-medium text-zinc-300 mb-2">
-              Capa da Rifa (Catálogo Hold Bar)
+              Capa da Rifa (Catálogo Hold Prêmios)
             </label>
             <div className="grid grid-cols-4 sm:grid-cols-8 gap-2">
               {PRIZE_GALLERY.map((preset) => {

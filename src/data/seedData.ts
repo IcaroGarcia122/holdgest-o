@@ -59,7 +59,7 @@ export const INITIAL_PRIZE_STOCK: PrizeStockItem[] = [
     quantity: 2,
     status: "reservado_rifa",
     supplier: "Distribuidora Tech Sul",
-    notes: "Lacrado com NF · Depósito Hold Bar",
+    notes: "Lacrado com NF · Depósito Hold Prêmios",
     createdAt: "2026-11-01T10:00:00",
   },
   {
@@ -154,8 +154,8 @@ export const DEFAULT_TEN_PRIZES: RafflePrize[] = [
   { position: 3, title: "Smart TV 65'' 4K QLED", investedValue: 3100, stockItemId: "stk-03" },
   { position: 4, title: "Caixa de Som JBL Boombox 4", investedValue: 2150, stockItemId: "stk-04" },
   { position: 5, title: "Kit Ar-Condicionado Split Inverter", investedValue: 1850, stockItemId: "stk-07" },
-  { position: 6, title: "Combo Black Label + Energéticos no Hold Bar", investedValue: 450 },
-  { position: 7, title: "Voucher R$ 500 em Consumação no Hold Bar", investedValue: 500 },
+  { position: 6, title: "Combo Black Label + Energéticos Hold Prêmios", investedValue: 450 },
+  { position: 7, title: "Voucher R$ 500 em Prêmios Hold Prêmios", investedValue: 500 },
   { position: 8, title: "Kit Churrasco + Chopeira Portátil Hold", investedValue: 380 },
   { position: 9, title: "Voucher R$ 300 no Bar", investedValue: 300 },
   { position: 10, title: "R$ 300 no Pix na Hora", investedValue: 300 },
@@ -171,14 +171,14 @@ export function buildSampleReceiptSvg(
     <rect width="420" height="520" rx="20" fill="#121212" stroke="#2a2a2a" stroke-width="2"/>
     <rect x="24" y="24" width="372" height="72" rx="12" fill="#1a1206" stroke="#FF7900" stroke-opacity="0.4"/>
     <text x="44" y="54" fill="#FFB000" font-family="monospace" font-size="14" font-weight="bold">COMPROVANTE PIX · RECEBIDO</text>
-    <text x="44" y="78" fill="#a3a3a3" font-family="sans-serif" font-size="12">Hold Bar Sports &amp; Music · Grupo VIP</text>
+    <text x="44" y="78" fill="#a3a3a3" font-family="sans-serif" font-size="12">Hold Prêmios · Grupo VIP Oficial</text>
     <text x="24" y="136" fill="#737373" font-family="sans-serif" font-size="11">VALOR TRANSFERIDO</text>
     <text x="24" y="168" fill="#4ade80" font-family="monospace" font-size="28" font-weight="bold">${amount}</text>
     <line x1="24" y1="192" x2="396" y2="192" stroke="#262626"/>
     <text x="24" y="224" fill="#737373" font-family="sans-serif" font-size="11">PAGADOR</text>
     <text x="24" y="246" fill="#ffffff" font-family="sans-serif" font-size="16" font-weight="bold">${payerName}</text>
     <text x="24" y="286" fill="#737373" font-family="sans-serif" font-size="11">DESTINATÁRIO</text>
-    <text x="24" y="308" fill="#e5e5e5" font-family="sans-serif" font-size="14">HOLD BAR SPORTS &amp; MUSIC LTDA</text>
+    <text x="24" y="308" fill="#e5e5e5" font-family="sans-serif" font-size="14">HOLD PRÊMIOS LTDA</text>
     <text x="24" y="348" fill="#737373" font-family="sans-serif" font-size="11">DATA E HORA</text>
     <text x="24" y="370" fill="#e5e5e5" font-family="monospace" font-size="13">${dateStr}</text>
     <text x="24" y="410" fill="#737373" font-family="sans-serif" font-size="11">ID DA TRANSAÇÃO (E2E)</text>
@@ -194,18 +194,18 @@ export const INITIAL_SEED_STATE: StoreState = {
     {
       id: "camp-sem-46",
       code: "SEM-46",
-      title: "Mega Rifa Hold Bar #46 (10 Prêmios)",
+      title: "Mega Rifa Hold Prêmios #46 (10 Prêmios)",
       weekLabel: "Semana 46 · 11 a 17 Nov",
-      whatsappGroupName: "Hold Bar — Grupo VIP Oficial",
+      whatsappGroupName: "Hold Prêmios — Grupo VIP Oficial",
       image: "/assets/images/prize_ps5.webp",
       prizes: [
         { position: 1, title: "PlayStation 5 Slim + 2 Controles", investedValue: 3450, stockItemId: "stk-01" },
         { position: 2, title: "Cervejeira LUXOR Porta de Vidro", investedValue: 2600, stockItemId: "stk-02" },
         { position: 3, title: "Combo Black Label + Energéticos", investedValue: 450 },
-        { position: 4, title: "Voucher R$ 500 Consumação Hold Bar", investedValue: 500 },
+        { position: 4, title: "Voucher R$ 500 Hold Prêmios", investedValue: 500 },
         { position: 5, title: "Kit Churrasco + Chopeira Portátil", investedValue: 380 },
         { position: 6, title: "Caixa Térmica Personalizada Hold", investedValue: 290 },
-        { position: 7, title: "Voucher R$ 300 no Bar", investedValue: 300 },
+        { position: 7, title: "Voucher R$ 300 Hold Prêmios", investedValue: 300 },
         { position: 8, title: "Kit Gin Tanqueray + Taças", investedValue: 240 },
         { position: 9, title: "Fone Bluetooth Esportivo", investedValue: 190 },
         { position: 10, title: "R$ 300 no Pix na Hora", investedValue: 300 },
@@ -220,9 +220,9 @@ export const INITIAL_SEED_STATE: StoreState = {
     {
       id: "camp-sem-45",
       code: "SEM-45",
-      title: "Rifa Especial Hold Bar #45 (10 Prêmios)",
+      title: "Rifa Especial Hold Prêmios #45 (10 Prêmios)",
       weekLabel: "Semana 45 · 04 a 10 Nov",
-      whatsappGroupName: "Hold Bar — Grupo VIP Oficial",
+      whatsappGroupName: "Hold Prêmios — Grupo VIP Oficial",
       image: "/assets/images/prize_scooter.webp",
       prizes: [
         { position: 1, title: "Moto Elétrica Scooter 2000W", investedValue: 5900 },
@@ -232,8 +232,8 @@ export const INITIAL_SEED_STATE: StoreState = {
         { position: 5, title: "R$ 250 no Pix", investedValue: 250 },
         { position: 6, title: "R$ 200 no Pix", investedValue: 200 },
         { position: 7, title: "R$ 150 no Pix", investedValue: 150 },
-        { position: 8, title: "Balde Heineken no Hold", investedValue: 120 },
-        { position: 9, title: "Boné Oficial Hold Bar", investedValue: 80 },
+        { position: 8, title: "Balde Heineken Personalizado", investedValue: 120 },
+        { position: 9, title: "Boné Oficial Hold Prêmios", investedValue: 80 },
         { position: 10, title: "R$ 100 no Pix", investedValue: 100 },
       ],
       ticketPrice: 150,
@@ -446,7 +446,7 @@ export const INITIAL_SEED_STATE: StoreState = {
       id: "win-45-1",
       campaignId: "camp-sem-45",
       campaignCode: "SEM-45",
-      campaignTitle: "Rifa Especial Hold Bar #45 (10 Prêmios)",
+      campaignTitle: "Rifa Especial Hold Prêmios #45 (10 Prêmios)",
       prizePosition: 1,
       prizeTitle: "Moto Elétrica Scooter 2000W",
       prizeImage: "/assets/images/prize_scooter.webp",
@@ -496,7 +496,7 @@ export const INITIAL_SEED_STATE: StoreState = {
     },
   ],
   botSettings: {
-    groupName: "Hold Bar — Grupo VIP Oficial",
+    groupName: "Hold Prêmios — Grupo VIP Oficial",
     outboundWebhookUrl: "",
     autoConfirmWithAi: true,
   },

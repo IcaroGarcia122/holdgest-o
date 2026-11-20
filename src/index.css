@@ -1,0 +1,49 @@
+@import "tailwindcss";
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme {
+  --font-condensed: "Barlow Condensed", sans-serif;
+  --font-body: "Plus Jakarta Sans", sans-serif;
+  --font-mono: "JetBrains Mono", monospace;
+
+  --color-hold-orange: #ff7900;
+  --color-hold-gold: #ffb000;
+}
+
+:root {
+  font-family: var(--font-body);
+  color-scheme: dark;
+}
+
+body {
+  background-color: #070709;
+  color: #f4f4f5;
+  -webkit-font-smoothing: antialiased;
+}
+
+.font-condensed {
+  font-family: var(--font-condensed);
+}
+
+.font-mono-tabular {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: #070709;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #23232b;
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #ff7900;
+}

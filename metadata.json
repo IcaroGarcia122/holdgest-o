@@ -1,0 +1,6 @@
+{
+  "name": "HOLD BAR — Gestão de Rifas",
+  "description": "Sistema completo de gestão de rifas, cotas, pagamentos via Pix e apuração ao vivo com a identidade visual do Hold Bar Sports & Music.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

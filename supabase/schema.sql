@@ -226,9 +226,8 @@ values ('receipts', 'receipts', false)
 on conflict (id) do nothing;
 
 -- ----------------------------------------------------------------------------
--- 4. ROW LEVEL SECURITY (RLS) E BLOQUEIO DE ANON / AUTHENTICATED
--- Nenhuma tabela ou função fica acessível a anon/authenticated; todo acesso ao
--- banco ocorre exclusivamente no servidor via SUPABASE_SECRET_KEY (service_role).
+-- 4. ROW LEVEL SECURITY (RLS)
+-- Nenhuma tabela fica exposta a anon/público; tudo passa pela API autenticada.
 -- ----------------------------------------------------------------------------
 
 alter table public.campaigns enable row level security;
@@ -265,7 +264,7 @@ declare
   v_code text;
 begin
   loop
-    v_code := 'R' || upper(substr(encode(gen_random_bytes(3), 'hex'), 1, 4));
+    v_code := 'R' || upper(substr(md5(random()::text || clock_timestamp()::text), 1, 4));
     exit when not exists (select 1 from public.orders where code = v_code);
   end loop;
   return v_code;
@@ -393,7 +392,9 @@ begin
     update public.orders
     set paid_amount = v_new_paid,
         status = 'pendente',
-        expires_at = greatest(coalesce(expires_at, now()), now()) + interval '30 minutes'
+        expiry_warned_at = null,
+        expires_at = greatest(coalesce(expires_at, now()), now())
+          + make_interval(mins => coalesce((select reservation_minutes from public.campaigns where id = v_order.campaign_id), 30))
     where id = v_order.id;
 
     update public.quotas
@@ -453,6 +454,10 @@ declare
   v_total numeric(12,2);
   v_expires_at timestamptz;
   v_res jsonb;
+  v_orf record;
+  v_linked boolean := false;
+  v_pix public.pix_received%rowtype;
+  v_pay jsonb;
 begin
   -- Idempotência por source_message_id
   if p_source_message_id is not null and length(trim(p_source_message_id)) > 0 then
@@ -477,6 +482,9 @@ begin
   if not found then
     return jsonb_build_object('ok', false, 'status', 404, 'error', 'campaign_not_found', 'message', 'Nenhuma rifa ativa encontrada.');
   end if;
+
+  -- Serializa pedidos do mesmo telefone (o limite de 3 não pode ser burlado em paralelo)
+  perform pg_advisory_xact_lock(hashtext('order_phone:' || v_phone));
 
   -- Limite de 3 pedidos em aberto por telefone
   select count(*) into v_pending_count
@@ -574,7 +582,7 @@ begin
     status, expires_at, source_message_id
   ) values (
     v_order_id, v_order_code, v_camp.id, trim(coalesce(p_buyer_name, 'Participante')),
-    nullif(trim(coalesce(p_holder_name, '')), ''), p_phone,
+    nullif(trim(coalesce(p_holder_name, '')), ''), v_phone,
     v_sorted_quotas, v_camp.ticket_price, v_total, 0, 'pix',
     'pendente', v_expires_at, p_source_message_id
   );
@@ -584,18 +592,39 @@ begin
   where campaign_id = v_camp.id and number = any(v_sorted_quotas);
 
   -- Vincula comprovantes órfãos do mesmo telefone recebidos nas últimas 24h
-  update public.receipts
-  set order_id = v_order_id,
-      campaign_id = v_camp.id,
-      status = 'em_analise'
-  where public.normalize_phone(buyer_phone) = v_phone
-    and status = 'orfao'
-    and created_at >= now() - interval '24 hours';
+  for v_orf in
+    select id, e2e from public.receipts
+    where public.normalize_phone(buyer_phone) = v_phone
+      and status = 'orfao'
+      and created_at >= now() - interval '24 hours'
+    order by created_at
+    for update
+  loop
+    update public.receipts
+    set order_id = v_order_id, campaign_id = v_camp.id, status = 'em_analise'
+    where id = v_orf.id;
+    v_linked := true;
 
-  if found then
-    update public.orders
-    set status = 'em_analise', needs_admin = true
-    where id = v_order_id;
+    -- Se o banco já avisou esse Pix, confirma na hora (valor do banco)
+    if v_camp.confirmation_mode = 'banco' and coalesce(v_orf.e2e, '') <> '' then
+      select * into v_pix from public.pix_received where e2e = v_orf.e2e and used_order_id is null for update;
+      if found then
+        v_pay := public.credit_order(v_order_id, v_pix.amount, 'banco');
+        if (v_pay->>'result') in ('confirmado', 'parcial') then
+          update public.pix_received set used_order_id = v_order_id where e2e = v_pix.e2e;
+          update public.receipts
+          set status = 'confirmado', amount = v_pix.amount, decided_by = 'banco', decided_at = now(),
+              summary = 'Confirmado automaticamente via conciliação bancária (E2E).'
+          where id = v_orf.id;
+        end if;
+      end if;
+    end if;
+  end loop;
+
+  -- Se sobrou comprovante aguardando conferência e o pedido ainda não foi pago, vai para análise
+  if v_linked and exists (select 1 from public.orders where id = v_order_id and status = 'pendente')
+     and exists (select 1 from public.receipts where order_id = v_order_id and status = 'em_analise') then
+    update public.orders set status = 'em_analise', needs_admin = true where id = v_order_id;
   end if;
 
   v_res := jsonb_build_object(
@@ -609,7 +638,8 @@ begin
       'quotas', to_jsonb(v_sorted_quotas),
       'totalAmount', v_total,
       'expiresAt', v_expires_at
-    )
+    ),
+    'payment', v_pay
   );
 
   if p_source_message_id is not null and length(trim(p_source_message_id)) > 0 then
@@ -708,6 +738,25 @@ begin
   end if;
 
   v_receipt_id := 'rcp-' || replace(gen_random_uuid()::text, '-', '');
+
+  -- Imagem ilegível/agendamento: só registra; NÃO segura a reserva nem aciona o admin
+  if p_pre_status = 'reenvio' then
+    insert into public.receipts (
+      id, buyer_phone, source_message_id, e2e, amount, payer_name,
+      recipient_name, paid_at, status, reasons, confidence, image_path, file_name, summary
+    ) values (
+      v_receipt_id, v_phone, p_source_message_id, nullif(trim(coalesce(p_e2e, '')), ''), p_amount, p_payer_name,
+      p_recipient_name, p_paid_at, 'reenvio', coalesce(p_reasons, '[]'::jsonb),
+      p_confidence, p_image_path, p_file_name, 'Pedido de reenvio ao participante.'
+    );
+    v_res := jsonb_build_object('ok', true, 'result', 'reenvio', 'receiptId', v_receipt_id);
+    if p_source_message_id is not null and length(trim(p_source_message_id)) > 0 then
+      insert into public.messages_log (source_message_id, phone, endpoint, response)
+      values (p_source_message_id, v_phone, 'register_receipt', v_res)
+      on conflict (source_message_id) do nothing;
+    end if;
+    return v_res;
+  end if;
 
   -- Se já veio rejeitado pela pré-triagem
   if p_pre_status = 'rejeitar' then
@@ -943,6 +992,8 @@ begin
   end if;
 
   return v_res;
+exception when unique_violation then
+  return jsonb_build_object('ok', false, 'result', 'duplicado', 'reason', 'e2e_ou_hash_duplicado');
 end;
 $$;
 
@@ -971,13 +1022,14 @@ begin
     return jsonb_build_object('ok', false, 'error', 'invalid_pix_payload');
   end if;
 
-  select * into v_existing from public.pix_received where e2e = v_e2e;
-  if found then
+  insert into public.pix_received (e2e, amount, txid, payer, paid_at, raw)
+  values (v_e2e, p_amount, p_txid, p_payer, coalesce(p_paid_at, now()), coalesce(p_raw, '{}'::jsonb))
+  on conflict (e2e) do nothing;
+
+  if not found then
+    select * into v_existing from public.pix_received where e2e = v_e2e;
     return jsonb_build_object('ok', true, 'duplicate', true, 'e2e', v_e2e, 'usedOrderId', v_existing.used_order_id);
   end if;
-
-  insert into public.pix_received (e2e, amount, txid, payer, paid_at, raw)
-  values (v_e2e, p_amount, p_txid, p_payer, coalesce(p_paid_at, now()), coalesce(p_raw, '{}'::jsonb));
 
   select * into v_receipt
   from public.receipts
@@ -1034,7 +1086,7 @@ begin
       and not exists (
         select 1 from public.receipts r
         where r.order_id = o.id
-          and r.status in ('em_analise', 'revisao', 'reenvio')
+          and r.status in ('em_analise', 'revisao')
       )
     for update of o skip locked
   loop
@@ -1090,7 +1142,7 @@ begin
       'createdAt', r.created_at
     ) as item
     from public.receipts r
-    where r.status in ('em_analise', 'revisao', 'orfao', 'reenvio')
+    where r.status in ('em_analise', 'revisao', 'orfao')
     union all
     select jsonb_build_object(
       'type', 'conflict',
@@ -1114,54 +1166,16 @@ begin
 end;
 $$;
 
+
 -- ----------------------------------------------------------------------------
--- 6. REVOGAÇÃO TOTAL DE PRIVILÉGIOS PARA ANON E AUTHENTICATED
--- Bloqueia acesso direto via PostgREST / RPC para clientes anon e authenticated.
--- Apenas service_role (SUPABASE_SECRET_KEY no servidor) acessa tabelas e RPCs.
+-- 6. SEGURANÇA: funções e tabelas só acessíveis pelo servidor (secret key / service_role)
+--    Sem isto, qualquer pessoa com a chave pública do site poderia chamar
+--    credit_order/register_pix pela API REST e marcar pagamentos como pagos.
 -- ----------------------------------------------------------------------------
+revoke all on all functions in schema public from public, anon, authenticated;
+grant execute on all functions in schema public to service_role;
+alter default privileges in schema public revoke execute on functions from public, anon, authenticated;
 
-revoke all on table
-  public.campaigns,
-  public.orders,
-  public.quotas,
-  public.receipts,
-  public.pix_received,
-  public.messages_log,
-  public.bot_settings,
-  public.prize_stock,
-  public.winners,
-  public.bot_logs,
-  public.audit_log
-from public, anon, authenticated;
-
-grant all on table
-  public.campaigns,
-  public.orders,
-  public.quotas,
-  public.receipts,
-  public.pix_received,
-  public.messages_log,
-  public.bot_settings,
-  public.prize_stock,
-  public.winners,
-  public.bot_logs,
-  public.audit_log
-to service_role;
-
-revoke all on function public.normalize_phone(text) from public, anon, authenticated;
-revoke all on function public.generate_order_code() from public, anon, authenticated;
-revoke all on function public.seed_campaign_quotas() from public, anon, authenticated;
-revoke all on function public.credit_order(text, numeric, text) from public, anon, authenticated;
-revoke all on function public.create_order(text, text, text, text, int[], int, text) from public, anon, authenticated;
-revoke all on function public.register_receipt(text, text, text, text, numeric, text, text, timestamptz, text, jsonb, numeric, text, text) from public, anon, authenticated;
-revoke all on function public.register_pix(text, numeric, text, text, timestamptz, jsonb) from public, anon, authenticated;
-revoke all on function public.expire_orders() from public, anon, authenticated;
-
-grant execute on function public.normalize_phone(text) to service_role;
-grant execute on function public.generate_order_code() to service_role;
-grant execute on function public.credit_order(text, numeric, text) to service_role;
-grant execute on function public.create_order(text, text, text, text, int[], int, text) to service_role;
-grant execute on function public.register_receipt(text, text, text, text, numeric, text, text, timestamptz, text, jsonb, numeric, text, text) to service_role;
-grant execute on function public.register_pix(text, numeric, text, text, timestamptz, jsonb) to service_role;
-grant execute on function public.expire_orders() to service_role;
-
+revoke all on all tables in schema public from anon, authenticated;
+grant all on all tables in schema public to service_role;
+alter default privileges in schema public revoke all on tables from anon, authenticated;

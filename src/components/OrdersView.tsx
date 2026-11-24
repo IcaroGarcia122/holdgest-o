@@ -9,6 +9,9 @@ import {
   FileCheck2,
   Paperclip,
   Trash2,
+  RotateCcw,
+  AlertTriangle,
+  ShieldAlert,
 } from "lucide-react";
 import {
   OrderStatus,
@@ -27,19 +30,21 @@ import { ReceiptModal } from "./ReceiptModal";
 interface OrdersViewProps {
   campaigns: RaffleCampaign[];
   orders: RaffleOrder[];
-  onConfirmPayment: (orderId: string) => void;
+  onConfirmPayment: (orderId: string) => Promise<void> | void;
+  onRevertPayment: (orderId: string) => Promise<void> | void;
   onAttachReceipt: (
     orderId: string,
     receipt: ReceiptAttachment,
     markAsPaid?: boolean
-  ) => void;
-  onCancelOrder: (orderId: string) => void;
+  ) => Promise<void> | void;
+  onCancelOrder: (orderId: string) => Promise<void> | void;
 }
 
 export const OrdersView: React.FC<OrdersViewProps> = ({
   campaigns,
   orders,
   onConfirmPayment,
+  onRevertPayment,
   onAttachReceipt,
   onCancelOrder,
 }) => {
@@ -80,6 +85,7 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
         return (
           o.buyerName.toLowerCase().includes(q) ||
           o.buyerPhone.toLowerCase().includes(q) ||
+          (o.code || "").toLowerCase().includes(q) ||
           (camp?.title.toLowerCase().includes(q) ?? false)
         );
       });
@@ -95,9 +101,9 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
     if (!file || !attachingOrderId) return;
     const targetId = attachingOrderId;
     const reader = new FileReader();
-    reader.onload = () => {
+    reader.onload = async () => {
       if (typeof reader.result === "string") {
-        onAttachReceipt(
+        await onAttachReceipt(
           targetId,
           {
             imageUrl: reader.result,
@@ -132,7 +138,8 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
             Pedidos & Pix
           </h1>
           <p className="text-xs sm:text-sm text-zinc-400 mt-1">
-            Reservas, comprovantes anexados e confirmações por rifa.
+            Reservas, pagamentos parciais/excedentes, comprovantes anexados e
+            estornos por rifa.
           </p>
         </div>
 
@@ -148,12 +155,14 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
 
       {/* Filters */}
       <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
-        <div className="inline-flex items-center gap-1 p-1 rounded-full bg-[#121216] border border-[#1E1E26] self-start">
+        <div className="inline-flex flex-wrap items-center gap-1 p-1 rounded-full bg-[#121216] border border-[#1E1E26] self-start">
           {(
             [
               { id: "todos", label: "Todos" },
               { id: "pago", label: "Confirmados" },
+              { id: "em_analise", label: "Em Análise" },
               { id: "pendente", label: "Aguardando Pix" },
+              { id: "expirado", label: "Expirados" },
               { id: "cancelado", label: "Cancelados" },
             ] as const
           ).map((tab) => (
@@ -193,7 +202,7 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
               type="text"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              placeholder="Buscar nome ou rifa..."
+              placeholder="Buscar nome, código ou rifa..."
               className="w-full pl-10 pr-3 py-2 rounded-full bg-[#121216] border border-[#1E1E26] text-xs text-white placeholder:text-zinc-600 focus:outline-none focus:border-[#FF7900]"
             />
           </div>
@@ -214,7 +223,7 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
                   <th className="py-3 px-4">Participante & Comprovante</th>
                   <th className="py-3 px-4">Rifa</th>
                   <th className="py-3 px-4">Números (1–100)</th>
-                  <th className="py-3 px-4 text-right">Total</th>
+                  <th className="py-3 px-4 text-right">Total / Pago</th>
                   <th className="py-3 px-4">Situação</th>
                   <th className="py-3 px-4 text-right">Ações</th>
                 </tr>
@@ -225,6 +234,7 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
                   const numsLabel = order.quotas
                     .map((q) => formatQuotaNumber(q))
                     .join(", ");
+                  const paid = order.paidAmount ?? 0;
 
                   return (
                     <tr
@@ -233,6 +243,11 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
                     >
                       <td className="py-3 px-4">
                         <div className="flex flex-wrap items-center gap-2">
+                          {order.code && (
+                            <span className="font-mono-tabular text-[11px] px-1.5 py-0.5 rounded bg-[#1A1A22] text-[#FFB000]">
+                              #{order.code}
+                            </span>
+                          )}
                           <span className="font-medium text-white text-[13px]">
                             {order.buyerName}
                           </span>
@@ -251,7 +266,8 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
                               <span>Comprovante</span>
                             </button>
                           ) : (
-                            order.status !== "cancelado" && (
+                            order.status !== "cancelado" &&
+                            order.status !== "expirado" && (
                               <button
                                 type="button"
                                 onClick={() => handleTriggerAttach(order.id)}
@@ -262,17 +278,30 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
                               </button>
                             )
                           )}
+
+                          {order.conflictReason === "conflito_reembolso" && (
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-red-500/15 border border-red-500/40 text-[10px] font-semibold text-red-400">
+                              <ShieldAlert className="w-3 h-3" />
+                              <span>Conflito · Reembolso</span>
+                            </span>
+                          )}
+
+                          {(order.surplusAmount ?? 0) > 0 && (
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-500/15 border border-amber-500/35 text-[10px] font-semibold text-amber-300">
+                              +{formatCurrency(order.surplusAmount ?? 0)} exc.
+                            </span>
+                          )}
                         </div>
                         <div className="text-[11px] text-zinc-500 font-mono-tabular mt-0.5">
                           {order.buyerPhone} · {formatDateTime(order.createdAt)}
                         </div>
                       </td>
 
-                      <td className="py-3 px-4 text-zinc-200 font-medium max-w-[250px] truncate text-[13px]">
+                      <td className="py-3 px-4 text-zinc-200 font-medium max-w-[230px] truncate text-[13px]">
                         {camp?.title ?? "Rifa removida"}
                       </td>
 
-                      <td className="py-3 px-4 max-w-[190px]">
+                      <td className="py-3 px-4 max-w-[180px]">
                         <div className="text-xs font-mono-tabular text-zinc-300 truncate">
                           {numsLabel}
                         </div>
@@ -282,8 +311,15 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
                         </div>
                       </td>
 
-                      <td className="py-3 px-4 text-right font-mono-tabular font-semibold text-white whitespace-nowrap text-[13px]">
-                        {formatCurrency(order.totalAmount)}
+                      <td className="py-3 px-4 text-right font-mono-tabular whitespace-nowrap text-[13px]">
+                        <div className="font-semibold text-white">
+                          {formatCurrency(order.totalAmount)}
+                        </div>
+                        {paid > 0 && paid < order.totalAmount && (
+                          <div className="text-[11px] text-amber-400">
+                            Pago: {formatCurrency(paid)}
+                          </div>
+                        )}
                       </td>
 
                       <td className="py-3 px-4 whitespace-nowrap">
@@ -292,10 +328,20 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
                             <CheckCircle2 className="w-3.5 h-3.5" />
                             <span>Confirmado</span>
                           </span>
+                        ) : order.status === "em_analise" ? (
+                          <span className="inline-flex items-center gap-1.5 text-xs font-medium text-[#FFB000]">
+                            <AlertTriangle className="w-3.5 h-3.5" />
+                            <span>Em Análise</span>
+                          </span>
                         ) : order.status === "pendente" ? (
                           <span className="inline-flex items-center gap-1.5 text-xs font-medium text-amber-400">
                             <Clock className="w-3.5 h-3.5" />
                             <span>Aguardando Pix</span>
+                          </span>
+                        ) : order.status === "expirado" ? (
+                          <span className="inline-flex items-center gap-1.5 text-xs font-medium text-zinc-400">
+                            <Clock className="w-3.5 h-3.5" />
+                            <span>Expirado</span>
                           </span>
                         ) : (
                           <span className="inline-flex items-center gap-1.5 text-xs font-medium text-red-400">
@@ -307,7 +353,8 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
 
                       <td className="py-3 px-4 text-right whitespace-nowrap">
                         <div className="inline-flex items-center gap-1.5">
-                          {order.status === "pendente" && (
+                          {(order.status === "pendente" ||
+                            order.status === "em_analise") && (
                             <button
                               type="button"
                               onClick={() => onConfirmPayment(order.id)}
@@ -316,16 +363,28 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
                               Confirmar Pix
                             </button>
                           )}
-                          {order.status !== "cancelado" && (
+                          {order.status === "pago" && (
                             <button
                               type="button"
-                              onClick={() => onCancelOrder(order.id)}
-                              title="Cancelar e liberar números"
-                              className="p-1.5 rounded-full text-zinc-500 hover:text-red-400 hover:bg-[#1B1B22]"
+                              onClick={() => onRevertPayment(order.id)}
+                              title="Reverter confirmação feita por engano"
+                              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-[#1A1A22] hover:bg-amber-500/15 border border-[#2A2A34] hover:border-amber-500/40 text-[11px] font-medium text-zinc-300 hover:text-amber-300"
                             >
-                              <Trash2 className="w-4 h-4" />
+                              <RotateCcw className="w-3 h-3" />
+                              <span>Reverter</span>
                             </button>
                           )}
+                          {order.status !== "cancelado" &&
+                            order.status !== "expirado" && (
+                              <button
+                                type="button"
+                                onClick={() => onCancelOrder(order.id)}
+                                title="Cancelar e liberar números"
+                                className="p-1.5 rounded-full text-zinc-500 hover:text-red-400 hover:bg-[#1B1B22]"
+                              >
+                                <Trash2 className="w-4 h-4" />
+                              </button>
+                            )}
                         </div>
                       </td>
                     </tr>

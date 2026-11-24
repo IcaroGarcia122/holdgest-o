@@ -1,9 +1,7 @@
-import { useState, useEffect, useCallback, useMemo } from "react";
-import { INITIAL_SEED_STATE, DEFAULT_TEN_PRIZES } from "../data/seedData";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import {
-  BotActivityLog,
   BotSettings,
-  DeliveryStatus,
+  ConfirmationMode,
   DrawMethod,
   PaymentMethod,
   PrizeCategory,
@@ -14,70 +12,252 @@ import {
   RaffleOrder,
   RafflePrize,
   ReceiptAttachment,
+  ReceiptRecord,
   StoreState,
-  WinnerRecord,
 } from "../types/raffle";
-import {
-  buildWhatsAppCompletionAlertText,
-  generateAuditHash,
-} from "../utils/formatters";
 
-const STORAGE_KEY = "hold_premios_rifas_state_v1";
-const LEGACY_STORAGE_KEY = "hold_bar_rifas_state_v3";
+const LEGACY_STORAGE_KEYS = [
+  "hold_premios_rifas_state_v1",
+  "hold_bar_rifas_state_v3",
+];
 
-function loadInitialState(): StoreState {
-  if (typeof window === "undefined") return INITIAL_SEED_STATE;
+export type AuthStatus =
+  | "loading"
+  | "unconfigured"
+  | "unauthenticated"
+  | "authenticated";
+
+const EMPTY_STATE: StoreState = {
+  campaigns: [],
+  orders: [],
+  receipts: [],
+  winners: [],
+  prizeStock: [],
+  botLogs: [],
+  botSettings: {
+    groupName: "Hold Prêmios — Grupo VIP Oficial",
+    groupJid: "",
+    outboundWebhookUrl: "",
+    adminPhones: [],
+    autoConfirmWithAi: false,
+  },
+};
+
+function readLegacyLocalBackup(): StoreState | null {
+  if (typeof window === "undefined") return null;
   try {
-    let raw = window.localStorage.getItem(STORAGE_KEY);
-    if (!raw) {
-      const legacyRaw = window.localStorage.getItem(LEGACY_STORAGE_KEY);
-      if (legacyRaw) {
-        raw = legacyRaw
-          .replace(/HOLD BAR SPORTS & MUSIC/g, "HOLD PRÊMIOS")
-          .replace(/Hold Bar Sports & Music/g, "Hold Prêmios")
-          .replace(/HOLD BAR/g, "HOLD PRÊMIOS")
-          .replace(/Hold Bar/gi, "Hold Prêmios");
+    for (const key of LEGACY_STORAGE_KEYS) {
+      const raw = window.localStorage.getItem(key);
+      if (!raw) continue;
+      const sanitized =
+        key === "hold_bar_rifas_state_v3"
+          ? raw
+              .replace(/HOLD BAR SPORTS & MUSIC/g, "HOLD PRÊMIOS")
+              .replace(/Hold Bar Sports & Music/g, "Hold Prêmios")
+              .replace(/HOLD BAR/g, "HOLD PRÊMIOS")
+              .replace(/Hold Bar/gi, "Hold Prêmios")
+          : raw;
+      const parsed = JSON.parse(sanitized) as StoreState;
+      if (
+        parsed &&
+        Array.isArray(parsed.campaigns) &&
+        (parsed.campaigns.length > 0 ||
+          (Array.isArray(parsed.prizeStock) && parsed.prizeStock.length > 0))
+      ) {
+        return parsed;
       }
     }
-    if (!raw) return INITIAL_SEED_STATE;
-    const parsed = JSON.parse(raw) as StoreState;
-    if (
-      !parsed ||
-      !Array.isArray(parsed.campaigns) ||
-      !Array.isArray(parsed.orders) ||
-      !Array.isArray(parsed.winners)
-    ) {
-      return INITIAL_SEED_STATE;
-    }
-    return {
-      campaigns: parsed.campaigns,
-      orders: parsed.orders,
-      winners: parsed.winners,
-      prizeStock: Array.isArray(parsed.prizeStock)
-        ? parsed.prizeStock
-        : INITIAL_SEED_STATE.prizeStock,
-      botLogs: Array.isArray(parsed.botLogs)
-        ? parsed.botLogs
-        : INITIAL_SEED_STATE.botLogs,
-      botSettings: parsed.botSettings ?? INITIAL_SEED_STATE.botSettings,
-    };
   } catch {
-    return INITIAL_SEED_STATE;
+    return null;
   }
+  return null;
 }
 
 export function useRaffleStore() {
-  const [state, setState] = useState<StoreState>(loadInitialState);
+  const [authStatus, setAuthStatus] = useState<AuthStatus>("loading");
+  const [userEmail, setUserEmail] = useState<string | null>(null);
+  // Keep accessToken strictly in memory (HttpOnly cookie is also set by server)
+  const accessTokenRef = useRef<string | null>(null);
+
+  const [state, setState] = useState<StoreState>(EMPTY_STATE);
+  const [isLoadingState, setIsLoadingState] = useState(false);
+  const [apiError, setApiError] = useState<string | null>(null);
   const [completionAlertCampaign, setCompletionAlertCampaign] =
     useState<RaffleCampaign | null>(null);
+  const [hasLocalBackup, setHasLocalBackup] = useState<boolean>(() =>
+    Boolean(readLegacyLocalBackup())
+  );
 
-  useEffect(() => {
-    try {
-      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-    } catch {
-      // Ignore storage quota errors
+  const buildHeaders = useCallback((extra?: Record<string, string>) => {
+    const headers: Record<string, string> = {
+      ...(extra ?? {}),
+    };
+    if (accessTokenRef.current) {
+      headers.Authorization = `Bearer ${accessTokenRef.current}`;
     }
-  }, [state]);
+    return headers;
+  }, []);
+
+  const refreshState = useCallback(async () => {
+    try {
+      setIsLoadingState(true);
+      const res = await fetch("/api/admin/state", {
+        method: "GET",
+        credentials: "include",
+        headers: buildHeaders(),
+      });
+      if (res.status === 401) {
+        accessTokenRef.current = null;
+        setUserEmail(null);
+        setAuthStatus("unauthenticated");
+        return;
+      }
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        setApiError(errData.message || "Falha ao carregar dados do servidor.");
+        return;
+      }
+      const data = (await res.json()) as StoreState;
+      setApiError(null);
+      setState({
+        campaigns: Array.isArray(data.campaigns) ? data.campaigns : [],
+        orders: Array.isArray(data.orders) ? data.orders : [],
+        receipts: Array.isArray(data.receipts) ? data.receipts : [],
+        winners: Array.isArray(data.winners) ? data.winners : [],
+        prizeStock: Array.isArray(data.prizeStock) ? data.prizeStock : [],
+        botLogs: Array.isArray(data.botLogs) ? data.botLogs : [],
+        botSettings: data.botSettings ?? EMPTY_STATE.botSettings,
+      });
+    } catch {
+      setApiError("Não foi possível conectar ao servidor.");
+    } finally {
+      setIsLoadingState(false);
+    }
+  }, [buildHeaders]);
+
+  // Initial session check
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch("/api/auth/session", { credentials: "include" });
+        const data = await res.json();
+        if (cancelled) return;
+        if (!data.configured) {
+          setAuthStatus("unconfigured");
+          return;
+        }
+        if (data.authenticated && data.user) {
+          setUserEmail(data.user.email || "admin");
+          setAuthStatus("authenticated");
+        } else {
+          setAuthStatus("unauthenticated");
+        }
+      } catch {
+        if (!cancelled) setAuthStatus("unauthenticated");
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Load initial state and poll every 5s when authenticated
+  useEffect(() => {
+    if (authStatus !== "authenticated") return;
+    void refreshState();
+    const timer = window.setInterval(() => {
+      void refreshState();
+    }, 5000);
+    return () => window.clearInterval(timer);
+  }, [authStatus, refreshState]);
+
+  const login = useCallback(
+    async (
+      email: string,
+      password: string
+    ): Promise<{ ok: boolean; error?: string }> => {
+      try {
+        const res = await fetch("/api/auth/login", {
+          method: "POST",
+          credentials: "include",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ email, password }),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          return {
+            ok: false,
+            error: data.message || "Falha na autenticação.",
+          };
+        }
+        accessTokenRef.current = data.accessToken || null;
+        setUserEmail(data.user?.email || email);
+        setAuthStatus("authenticated");
+        return { ok: true };
+      } catch {
+        return { ok: false, error: "Erro de rede ao tentar autenticar." };
+      }
+    },
+    []
+  );
+
+  const logout = useCallback(async () => {
+    try {
+      await fetch("/api/auth/logout", {
+        method: "POST",
+        credentials: "include",
+      });
+    } catch {
+      // ignore
+    }
+    accessTokenRef.current = null;
+    setUserEmail(null);
+    setState(EMPTY_STATE);
+    setCompletionAlertCampaign(null);
+    setAuthStatus("unauthenticated");
+  }, []);
+
+  const postAdmin = useCallback(
+    async (
+      resource:
+        | "campaigns"
+        | "orders"
+        | "receipts"
+        | "inventory"
+        | "settings"
+        | "import",
+      payload: Record<string, unknown>
+    ): Promise<{ ok: boolean; data?: Record<string, unknown>; error?: string }> => {
+      try {
+        const res = await fetch(`/api/admin/${resource}`, {
+          method: "POST",
+          credentials: "include",
+          headers: buildHeaders({ "Content-Type": "application/json" }),
+          body: JSON.stringify(payload),
+        });
+        if (res.status === 401) {
+          accessTokenRef.current = null;
+          setAuthStatus("unauthenticated");
+          return { ok: false, error: "Sessão expirada. Faça login novamente." };
+        }
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          return {
+            ok: false,
+            data,
+            error:
+              data.message || data.error || "Não foi possível concluir a ação.",
+          };
+        }
+        await refreshState();
+        return { ok: true, data };
+      } catch {
+        return { ok: false, error: "Falha de comunicação com o servidor." };
+      }
+    },
+    [buildHeaders, refreshState]
+  );
 
   const activeWeeklyCampaign = useMemo(
     () => state.campaigns.find((c) => c.status === "ativa") ?? null,
@@ -90,7 +270,10 @@ export function useRaffleStore() {
       const orderByNumber = new Map<number, RaffleOrder>();
 
       const activeOrders = state.orders.filter(
-        (o) => o.campaignId === campaignId && o.status !== "cancelado"
+        (o) =>
+          o.campaignId === campaignId &&
+          o.status !== "cancelado" &&
+          o.status !== "expirado"
       );
 
       for (const order of activeOrders) {
@@ -128,16 +311,25 @@ export function useRaffleStore() {
       let pendingRevenue = 0;
 
       const campaignOrders = state.orders.filter(
-        (o) => o.campaignId === campaignId && o.status !== "cancelado"
+        (o) =>
+          o.campaignId === campaignId &&
+          o.status !== "cancelado" &&
+          o.status !== "expirado"
       );
 
       for (const order of campaignOrders) {
         if (order.status === "pago") {
           paidCount += order.quotas.length;
           confirmedRevenue += order.totalAmount;
-        } else if (order.status === "pendente") {
+        } else if (order.status === "pendente" || order.status === "em_analise") {
           reservedCount += order.quotas.length;
-          pendingRevenue += order.totalAmount;
+          pendingRevenue += Math.max(
+            0,
+            order.totalAmount - (order.paidAmount || 0)
+          );
+          if (order.paidAmount && order.paidAmount > 0) {
+            confirmedRevenue += order.paidAmount;
+          }
         }
       }
 
@@ -185,67 +377,50 @@ export function useRaffleStore() {
     };
   }, [state.prizeStock]);
 
-  const triggerCompletionNotification = useCallback(
-    (campaign: RaffleCampaign, outboundWebhookUrl: string) => {
-      setCompletionAlertCampaign(campaign);
-
-      if (typeof window !== "undefined" && "Notification" in window) {
-        if (Notification.permission === "granted") {
-          new Notification("Rifa Completa (100/100) — HOLD PRÊMIOS", {
-            body: `A rifa "${campaign.title}" atingiu 100 números confirmados e está pronta para o sorteio dos 10 prêmios!`,
-            icon: "/assets/images/logo_hold_ouro.webp",
-          });
-        }
-      }
-
-      fetch("/api/bot/notify-complete", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          webhookUrl: outboundWebhookUrl,
-          campaignTitle: campaign.title,
-          weekLabel: campaign.weekLabel,
-          groupName: campaign.whatsappGroupName,
-          message: buildWhatsAppCompletionAlertText(campaign),
-        }),
-      }).catch(() => {
-        // Silent fallback
-      });
-    },
-    []
+  const receipts = useMemo<ReceiptRecord[]>(
+    () => state.receipts ?? [],
+    [state.receipts]
   );
 
+  const pendingReceiptsCount = useMemo(
+    () =>
+      receipts.filter((r) =>
+        ["em_analise", "revisao", "orfao", "reenvio"].includes(r.status)
+      ).length,
+    [receipts]
+  );
+
+  const needsAdminOrdersCount = useMemo(
+    () => state.orders.filter((o) => o.needsAdmin).length,
+    [state.orders]
+  );
+
+  // Trigger visual/browser banner when server reports 100/100 completed
+  const prevCompleteRef = useRef<string | null>(null);
   useEffect(() => {
     if (!activeWeeklyCampaign || activeWeeklyCampaign.status !== "ativa") return;
     const stats = getCampaignStats(activeWeeklyCampaign.id);
-    if (stats.paidCount >= 100 && !activeWeeklyCampaign.completedNotifiedAt) {
-      const nowIso = new Date().toISOString();
-      const updatedCampaign: RaffleCampaign = {
-        ...activeWeeklyCampaign,
-        completedNotifiedAt: nowIso,
-      };
-      setState((prev) => ({
-        ...prev,
-        campaigns: prev.campaigns.map((c) =>
-          c.id === activeWeeklyCampaign.id
-            ? { ...c, completedNotifiedAt: nowIso }
-            : c
-        ),
-      }));
-      triggerCompletionNotification(
-        updatedCampaign,
-        state.botSettings.outboundWebhookUrl
-      );
+    if (
+      stats.paidCount >= 100 &&
+      prevCompleteRef.current !== activeWeeklyCampaign.id
+    ) {
+      prevCompleteRef.current = activeWeeklyCampaign.id;
+      setCompletionAlertCampaign(activeWeeklyCampaign);
+      if (
+        typeof window !== "undefined" &&
+        "Notification" in window &&
+        Notification.permission === "granted"
+      ) {
+        new Notification("Rifa Completa (100/100) — HOLD PRÊMIOS", {
+          body: `A rifa "${activeWeeklyCampaign.title}" atingiu 100 números confirmados!`,
+          icon: "/assets/images/logo_hold_ouro.webp",
+        });
+      }
     }
-  }, [
-    activeWeeklyCampaign,
-    getCampaignStats,
-    state.botSettings.outboundWebhookUrl,
-    triggerCompletionNotification,
-  ]);
+  }, [activeWeeklyCampaign, getCampaignStats]);
 
   const createCampaign = useCallback(
-    (input: {
+    async (input: {
       title: string;
       weekLabel: string;
       whatsappGroupName: string;
@@ -254,79 +429,46 @@ export function useRaffleStore() {
       ticketPrice: number;
       drawMethod: DrawMethod;
       scheduledDrawDate: string;
-    }): RaffleCampaign => {
-      const nextNum = state.campaigns.length + 45;
-      const newCampaign: RaffleCampaign = {
-        id: `camp-sem-${Date.now().toString().slice(-5)}`,
-        code: `SEM-${nextNum}`,
-        title: input.title.trim(),
-        weekLabel: input.weekLabel.trim(),
-        whatsappGroupName:
-          input.whatsappGroupName.trim() || state.botSettings.groupName,
-        image: input.image,
-        prizes:
-          input.prizes.length === 10 ? input.prizes : DEFAULT_TEN_PRIZES,
-        ticketPrice: input.ticketPrice,
-        totalQuotas: 100,
-        drawMethod: input.drawMethod,
-        scheduledDrawDate: input.scheduledDrawDate,
-        status: "ativa",
-        createdAt: new Date().toISOString(),
-      };
-
-      setState((prev) => ({
-        ...prev,
-        campaigns: [
-          newCampaign,
-          ...prev.campaigns.map((c) =>
-            c.status === "ativa" ? { ...c, status: "encerrada" as const } : c
-          ),
-        ],
-      }));
+      pixKey?: string;
+      pixBeneficiary?: string;
+      reservationMinutes?: number;
+      confirmationMode?: ConfirmationMode;
+    }): Promise<RaffleCampaign | null> => {
+      const res = await postAdmin("campaigns", {
+        action: "create",
+        ...input,
+      });
       setCompletionAlertCampaign(null);
-      return newCampaign;
+      return (res.data?.campaign as RaffleCampaign) ?? null;
     },
-    [state.campaigns.length, state.botSettings.groupName]
+    [postAdmin]
   );
 
   const updateCampaign = useCallback(
-    (id: string, patch: Partial<RaffleCampaign>) => {
-      setState((prev) => ({
-        ...prev,
-        campaigns: prev.campaigns.map((c) =>
-          c.id === id ? { ...c, ...patch } : c
-        ),
-      }));
+    async (id: string, patch: Partial<RaffleCampaign>) => {
+      await postAdmin("campaigns", { action: "update", id, ...patch });
     },
-    []
+    [postAdmin]
   );
 
-  const closeCampaign = useCallback((id: string) => {
-    setState((prev) => ({
-      ...prev,
-      campaigns: prev.campaigns.map((c) =>
-        c.id === id ? { ...c, status: "encerrada" } : c
-      ),
-    }));
-    setCompletionAlertCampaign((prev) => (prev?.id === id ? null : prev));
-  }, []);
+  const closeCampaign = useCallback(
+    async (id: string) => {
+      await postAdmin("campaigns", { action: "close", id });
+      setCompletionAlertCampaign((prev) => (prev?.id === id ? null : prev));
+    },
+    [postAdmin]
+  );
 
-  const reactivateCampaign = useCallback((id: string) => {
-    setState((prev) => ({
-      ...prev,
-      campaigns: prev.campaigns.map((c) =>
-        c.id === id
-          ? { ...c, status: "ativa" }
-          : c.status === "ativa"
-          ? { ...c, status: "encerrada" }
-          : c
-      ),
-    }));
-    setCompletionAlertCampaign(null);
-  }, []);
+  const reactivateCampaign = useCallback(
+    async (id: string) => {
+      await postAdmin("campaigns", { action: "reactivate", id });
+      setCompletionAlertCampaign(null);
+    },
+    [postAdmin]
+  );
 
   const createOrder = useCallback(
-    (input: {
+    async (input: {
       campaignId: string;
       buyerName: string;
       buyerPhone: string;
@@ -335,133 +477,109 @@ export function useRaffleStore() {
       paymentMethod: PaymentMethod;
       markAsPaid: boolean;
       receipt?: ReceiptAttachment;
-    }): { ok: boolean; order?: RaffleOrder; error?: string } => {
-      const campaign = state.campaigns.find((c) => c.id === input.campaignId);
-      if (!campaign) {
-        return { ok: false, error: "Rifa não encontrada." };
-      }
-      if (campaign.status !== "ativa") {
-        return {
-          ok: false,
-          error: "Esta rifa semanal já foi encerrada.",
-        };
-      }
-
-      const uniqueQuotas = Array.from(
-        new Set(
-          input.quotas.filter(
-            (q) => Number.isInteger(q) && q >= 1 && q <= 100
-          )
-        )
-      ).sort((a, b) => a - b);
-
-      if (uniqueQuotas.length === 0) {
-        return {
-          ok: false,
-          error: "Selecione ao menos um número de 1 a 100.",
-        };
-      }
-
-      const takenNumbers = new Set<number>();
-      for (const order of state.orders) {
-        if (order.campaignId === campaign.id && order.status !== "cancelado") {
-          for (const q of order.quotas) takenNumbers.add(q);
-        }
-      }
-
-      const conflicts = uniqueQuotas.filter((q) => takenNumbers.has(q));
-      if (conflicts.length > 0) {
-        return {
-          ok: false,
-          error: `Número(s) já ocupado(s) na lista: ${conflicts
-            .map((n) => String(n).padStart(2, "0"))
-            .join(", ")}.`,
-        };
-      }
-
-      const totalAmount = Number(
-        (uniqueQuotas.length * campaign.ticketPrice).toFixed(2)
-      );
-      const nowIso = new Date().toISOString();
-
-      const newOrder: RaffleOrder = {
-        id: `ord-${Date.now().toString().slice(-6)}`,
-        campaignId: campaign.id,
-        buyerName: input.buyerName.trim(),
-        buyerPhone: input.buyerPhone.trim() || "(11) 90000-0000",
-        buyerNotes: input.buyerNotes?.trim() || undefined,
-        quotas: uniqueQuotas,
-        unitPrice: campaign.ticketPrice,
-        totalAmount,
+    }): Promise<{ ok: boolean; order?: RaffleOrder; error?: string }> => {
+      const res = await postAdmin("orders", {
+        action: "create",
+        campaignId: input.campaignId,
+        buyerName: input.buyerName,
+        buyerPhone: input.buyerPhone,
+        quotas: input.quotas,
         paymentMethod: input.paymentMethod,
-        status: input.markAsPaid ? "pago" : "pendente",
-        receipt: input.receipt,
-        createdAt: nowIso,
-        paidAt: input.markAsPaid ? nowIso : undefined,
-      };
-
-      setState((prev) => ({
-        ...prev,
-        orders: [newOrder, ...prev.orders],
-      }));
-
-      return { ok: true, order: newOrder };
+        markAsPaid: input.markAsPaid,
+        receiptBase64: input.receipt?.imageUrl,
+        receiptFileName: input.receipt?.fileName,
+      });
+      if (!res.ok) {
+        return { ok: false, error: res.error };
+      }
+      return { ok: true, order: res.data?.order as RaffleOrder | undefined };
     },
-    [state.campaigns, state.orders]
+    [postAdmin]
   );
 
   const confirmOrderPayment = useCallback(
-    (orderId: string, receipt?: ReceiptAttachment) => {
-      const nowIso = new Date().toISOString();
-      setState((prev) => ({
-        ...prev,
-        orders: prev.orders.map((o) =>
-          o.id === orderId
-            ? {
-                ...o,
-                status: "pago",
-                paidAt: o.paidAt ?? nowIso,
-                receipt: receipt ?? o.receipt,
-              }
-            : o
-        ),
-      }));
+    async (orderId: string, receipt?: ReceiptAttachment) => {
+      if (receipt?.imageUrl) {
+        await postAdmin("orders", {
+          action: "attach_receipt",
+          orderId,
+          receiptBase64: receipt.imageUrl,
+          fileName: receipt.fileName,
+          markAsPaid: true,
+        });
+      } else {
+        await postAdmin("orders", {
+          action: "confirm_manual",
+          orderId,
+        });
+      }
     },
-    []
+    [postAdmin]
+  );
+
+  const revertOrderPayment = useCallback(
+    async (orderId: string) => {
+      await postAdmin("orders", { action: "revert", orderId });
+    },
+    [postAdmin]
   );
 
   const attachReceiptToOrder = useCallback(
-    (orderId: string, receipt: ReceiptAttachment, markAsPaid = true) => {
-      const nowIso = new Date().toISOString();
-      setState((prev) => ({
-        ...prev,
-        orders: prev.orders.map((o) =>
-          o.id === orderId
-            ? {
-                ...o,
-                receipt,
-                status: markAsPaid ? "pago" : o.status,
-                paidAt: markAsPaid ? o.paidAt ?? nowIso : o.paidAt,
-              }
-            : o
-        ),
-      }));
+    async (orderId: string, receipt: ReceiptAttachment, markAsPaid = true) => {
+      if (!receipt.imageUrl) return;
+      await postAdmin("orders", {
+        action: "attach_receipt",
+        orderId,
+        receiptBase64: receipt.imageUrl,
+        fileName: receipt.fileName,
+        markAsPaid,
+      });
     },
-    []
+    [postAdmin]
   );
 
-  const cancelOrder = useCallback((orderId: string) => {
-    setState((prev) => ({
-      ...prev,
-      orders: prev.orders.map((o) =>
-        o.id === orderId ? { ...o, status: "cancelado" } : o
-      ),
-    }));
-  }, []);
+  const cancelOrder = useCallback(
+    async (orderId: string) => {
+      await postAdmin("orders", { action: "cancel", orderId });
+    },
+    [postAdmin]
+  );
 
-  // Prize Stock CRUD
+  const approveReceipt = useCallback(
+    async (receiptId: string, amount?: number) => {
+      return await postAdmin("receipts", {
+        action: "approve",
+        receiptId,
+        amount,
+      });
+    },
+    [postAdmin]
+  );
+
+  const rejectReceipt = useCallback(
+    async (receiptId: string, reason?: string) => {
+      return await postAdmin("receipts", {
+        action: "reject",
+        receiptId,
+        reason,
+      });
+    },
+    [postAdmin]
+  );
+
+  const linkReceiptToOrder = useCallback(
+    async (receiptId: string, orderId: string) => {
+      return await postAdmin("receipts", {
+        action: "link",
+        receiptId,
+        orderId,
+      });
+    },
+    [postAdmin]
+  );
+
   const addPrizeStockItem = useCallback(
-    (input: {
+    async (input: {
       name: string;
       category: PrizeCategory;
       image: string;
@@ -471,212 +589,77 @@ export function useRaffleStore() {
       supplier?: string;
       notes?: string;
     }) => {
-      const item: PrizeStockItem = {
-        id: `stk-${Date.now().toString().slice(-6)}`,
-        name: input.name.trim(),
-        category: input.category,
-        image: input.image,
-        investedValue: input.investedValue,
-        quantity: Math.max(0, input.quantity),
-        status: input.quantity <= 0 ? "esgotado" : input.status,
-        supplier: input.supplier?.trim() || undefined,
-        notes: input.notes?.trim() || undefined,
-        createdAt: new Date().toISOString(),
-      };
-      setState((prev) => ({
-        ...prev,
-        prizeStock: [item, ...prev.prizeStock],
-      }));
-      return item;
+      await postAdmin("inventory", { action: "add", ...input });
     },
-    []
+    [postAdmin]
   );
 
   const updatePrizeStockItem = useCallback(
-    (id: string, patch: Partial<PrizeStockItem>) => {
-      setState((prev) => {
-        const nextStock = prev.prizeStock.map((item) => {
-          if (item.id !== id) return item;
-          const nextQty =
-            patch.quantity !== undefined ? Math.max(0, patch.quantity) : item.quantity;
-          const nextStatus =
-            nextQty === 0
-              ? "esgotado"
-              : patch.status ?? (item.status === "esgotado" ? "disponivel" : item.status);
-          return { ...item, ...patch, quantity: nextQty, status: nextStatus };
-        });
-
-        const updatedItem = nextStock.find((item) => item.id === id);
-        const nextCampaigns =
-          updatedItem &&
-          (patch.name !== undefined || patch.investedValue !== undefined)
-            ? prev.campaigns.map((camp) =>
-                camp.status !== "ativa"
-                  ? camp
-                  : {
-                      ...camp,
-                      prizes: camp.prizes.map((p) =>
-                        p.stockItemId === id
-                          ? {
-                              ...p,
-                              title:
-                                patch.name !== undefined
-                                  ? updatedItem.name
-                                  : p.title,
-                              investedValue:
-                                patch.investedValue !== undefined
-                                  ? updatedItem.investedValue
-                                  : p.investedValue,
-                            }
-                          : p
-                      ),
-                    }
-              )
-            : prev.campaigns;
-
-        return {
-          ...prev,
-          prizeStock: nextStock,
-          campaigns: nextCampaigns,
-        };
-      });
+    async (id: string, patch: Partial<PrizeStockItem>) => {
+      await postAdmin("inventory", { action: "update", id, ...patch });
     },
-    []
+    [postAdmin]
   );
 
-  const deletePrizeStockItem = useCallback((id: string) => {
-    setState((prev) => ({
-      ...prev,
-      prizeStock: prev.prizeStock.filter((item) => item.id !== id),
-      campaigns: prev.campaigns.map((camp) =>
-        camp.status !== "ativa"
-          ? camp
-          : {
-              ...camp,
-              prizes: camp.prizes.map((p) =>
-                p.stockItemId === id
-                  ? { ...p, stockItemId: undefined, investedValue: 0 }
-                  : p
-              ),
-            }
-      ),
-    }));
-  }, []);
+  const deletePrizeStockItem = useCallback(
+    async (id: string) => {
+      await postAdmin("inventory", { action: "delete", id });
+    },
+    [postAdmin]
+  );
 
-  const executeDraw = useCallback(
-    (input: {
-      campaignId: string;
-      quotaNumber: number;
-      prizePosition: number;
-      drawMethod: DrawMethod;
-      federalNumber?: string;
-    }): { ok: boolean; winner?: WinnerRecord; error?: string } => {
-      const campaign = state.campaigns.find((c) => c.id === input.campaignId);
-      if (!campaign) {
-        return { ok: false, error: "Rifa não encontrada." };
+  const updateBotSettings = useCallback(
+    async (
+      patch: Partial<BotSettings> & {
+        activeCampaignId?: string;
+        pixKey?: string;
+        pixBeneficiary?: string;
+        reservationMinutes?: number;
+        confirmationMode?: ConfirmationMode;
       }
+    ) => {
+      return await postAdmin("settings", patch);
+    },
+    [postAdmin]
+  );
 
-      const winningOrder = state.orders.find(
-        (o) =>
-          o.campaignId === campaign.id &&
-          o.status === "pago" &&
-          o.quotas.includes(input.quotaNumber)
-      );
-
-      if (!winningOrder) {
-        return {
-          ok: false,
-          error: "O número sorteado não possui pagamento confirmado.",
-        };
+  const importLocalData = useCallback(async () => {
+    const backup = readLegacyLocalBackup();
+    if (!backup) {
+      return { ok: false, error: "Nenhum dado antigo encontrado no navegador." };
+    }
+    const res = await postAdmin("import", { state: backup });
+    if (res.ok) {
+      try {
+        for (const k of LEGACY_STORAGE_KEYS) {
+          window.localStorage.removeItem(k);
+        }
+      } catch {
+        // ignore
       }
-
-      const prize =
-        campaign.prizes.find((p) => p.position === input.prizePosition) ?? {
-          position: input.prizePosition,
-          title: `${input.prizePosition}º Prêmio`,
-        };
-
-      const nowIso = new Date().toISOString();
-      const newWinner: WinnerRecord = {
-        id: `win-${Date.now().toString().slice(-6)}`,
-        campaignId: campaign.id,
-        campaignCode: campaign.code,
-        campaignTitle: campaign.title,
-        prizePosition: prize.position,
-        prizeTitle: prize.title,
-        prizeImage: campaign.image,
-        quotaNumber: input.quotaNumber,
-        buyerName: winningOrder.buyerName,
-        buyerPhone: winningOrder.buyerPhone,
-        drawMethod: input.drawMethod,
-        federalNumber: input.federalNumber,
-        auditHash: generateAuditHash(campaign.id, input.quotaNumber, nowIso),
-        drawnAt: nowIso,
-        deliveryStatus: "aguardando",
-      };
-
-      setState((prev) => ({
-        ...prev,
-        winners: [newWinner, ...prev.winners],
-      }));
-
-      return { ok: true, winner: newWinner };
-    },
-    [state.campaigns, state.orders]
-  );
-
-  const updateWinnerDelivery = useCallback(
-    (winnerId: string, deliveryStatus: DeliveryStatus) => {
-      setState((prev) => ({
-        ...prev,
-        winners: prev.winners.map((w) =>
-          w.id === winnerId ? { ...w, deliveryStatus } : w
-        ),
-      }));
-    },
-    []
-  );
-
-  const addBotLog = useCallback((log: Omit<BotActivityLog, "id" | "timestamp">) => {
-    const newLog: BotActivityLog = {
-      ...log,
-      id: `log-${Date.now().toString().slice(-6)}`,
-      timestamp: new Date().toISOString(),
-    };
-    setState((prev) => ({
-      ...prev,
-      botLogs: [newLog, ...prev.botLogs].slice(0, 50),
-    }));
-  }, []);
-
-  const updateBotSettings = useCallback((patch: Partial<BotSettings>) => {
-    setState((prev) => ({
-      ...prev,
-      botSettings: { ...prev.botSettings, ...patch },
-    }));
-  }, []);
+      setHasLocalBackup(false);
+    }
+    return res;
+  }, [postAdmin]);
 
   const dismissCompletionAlert = useCallback(() => {
     setCompletionAlertCampaign(null);
   }, []);
 
-  const resetDemoData = useCallback(() => {
-    setState(INITIAL_SEED_STATE);
-    setCompletionAlertCampaign(null);
-    try {
-      window.localStorage.setItem(
-        STORAGE_KEY,
-        JSON.stringify(INITIAL_SEED_STATE)
-      );
-    } catch {
-      // ignore
-    }
-  }, []);
-
   return {
+    authStatus,
+    userEmail,
+    login,
+    logout,
+    isLoadingState,
+    apiError,
+    refreshState,
     campaigns: state.campaigns,
     activeWeeklyCampaign,
     orders: state.orders,
+    receipts,
+    pendingReceiptsCount,
+    needsAdminOrdersCount,
     winners: state.winners,
     prizeStock: state.prizeStock,
     stockSummary,
@@ -684,6 +667,8 @@ export function useRaffleStore() {
     botSettings: state.botSettings,
     completionAlertCampaign,
     dismissCompletionAlert,
+    hasLocalBackup,
+    importLocalData,
     getList100,
     getCampaignStats,
     createCampaign,
@@ -692,15 +677,15 @@ export function useRaffleStore() {
     reactivateCampaign,
     createOrder,
     confirmOrderPayment,
+    revertOrderPayment,
     attachReceiptToOrder,
     cancelOrder,
+    approveReceipt,
+    rejectReceipt,
+    linkReceiptToOrder,
     addPrizeStockItem,
     updatePrizeStockItem,
     deletePrizeStockItem,
-    executeDraw,
-    updateWinnerDelivery,
-    addBotLog,
     updateBotSettings,
-    resetDemoData,
   };
 }

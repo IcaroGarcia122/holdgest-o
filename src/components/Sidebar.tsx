@@ -3,9 +3,11 @@ import {
   LayoutGrid,
   ListOrdered,
   ReceiptText,
+  FileCheck2,
   Package,
   Trophy,
-  RotateCcw,
+  Settings,
+  LogOut,
   X,
 } from "lucide-react";
 import { ActiveView } from "../types/raffle";
@@ -14,8 +16,10 @@ interface SidebarProps {
   activeView: ActiveView;
   onSelectView: (view: ActiveView) => void;
   pendingOrdersCount: number;
+  pendingReceiptsCount: number;
   activeConfirmedCount: number;
-  onResetDemo: () => void;
+  userEmail: string | null;
+  onLogout: () => void;
   mobileOpen: boolean;
   onCloseMobile: () => void;
 }
@@ -24,8 +28,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
   activeView,
   onSelectView,
   pendingOrdersCount,
+  pendingReceiptsCount,
   activeConfirmedCount,
-  onResetDemo,
+  userEmail,
+  onLogout,
   mobileOpen,
   onCloseMobile,
 }) => {
@@ -53,6 +59,13 @@ export const Sidebar: React.FC<SidebarProps> = ({
       badge: pendingOrdersCount > 0 ? String(pendingOrdersCount) : undefined,
     },
     {
+      id: "receipts",
+      label: "Comprovantes",
+      icon: <FileCheck2 className="w-[18px] h-[18px]" />,
+      badge:
+        pendingReceiptsCount > 0 ? String(pendingReceiptsCount) : undefined,
+    },
+    {
       id: "inventory",
       label: "Estoque de Prêmios",
       icon: <Package className="w-[18px] h-[18px]" />,
@@ -61,6 +74,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
       id: "campaigns",
       label: "Rifas & Histórico",
       icon: <Trophy className="w-[18px] h-[18px]" />,
+    },
+    {
+      id: "settings",
+      label: "Configurações do Bot",
+      icon: <Settings className="w-[18px] h-[18px]" />,
     },
   ];
 
@@ -71,7 +89,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
   return (
     <>
-      {/* Desktop Slim Icon Rail (68px) */}
+      {/* Desktop Slim Icon Rail (72px) */}
       <aside className="hidden lg:flex flex-col items-center justify-between w-[72px] shrink-0 h-screen sticky top-0 py-5 bg-[#0C0C0F] border-r border-[#1B1B22] select-none">
         {/* Top Hold Emblem */}
         <button
@@ -89,7 +107,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
         </button>
 
         {/* Center Navigation Icons */}
-        <nav aria-label="Menu principal" className="flex flex-col items-center gap-3">
+        <nav aria-label="Menu principal" className="flex flex-col items-center gap-2.5">
           {navItems.map((item) => {
             const isActive = activeView === item.id;
             return (
@@ -116,15 +134,15 @@ export const Sidebar: React.FC<SidebarProps> = ({
           })}
         </nav>
 
-        {/* Bottom Reset Utility */}
+        {/* Bottom Logout Utility */}
         <button
           type="button"
-          onClick={onResetDemo}
-          title="Restaurar dados iniciais"
-          aria-label="Restaurar dados iniciais"
-          className="w-10 h-10 rounded-xl bg-[#141419] border border-[#22222B] text-zinc-400 hover:text-white hover:border-[#FF7900] flex items-center justify-center transition-colors"
+          onClick={onLogout}
+          title={userEmail ? `Sair (${userEmail})` : "Sair do painel"}
+          aria-label="Sair do painel"
+          className="w-10 h-10 rounded-xl bg-[#141419] border border-[#22222B] text-zinc-400 hover:text-red-400 hover:border-red-500/40 flex items-center justify-center transition-colors"
         >
-          <RotateCcw className="w-4 h-4" />
+          <LogOut className="w-4 h-4" />
         </button>
       </aside>
 
@@ -155,7 +173,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
               </button>
             </div>
 
-            <nav className="flex-1 py-4 space-y-1.5">
+            <nav className="flex-1 py-4 space-y-1.5 overflow-y-auto">
               {navItems.map((item) => {
                 const isActive = activeView === item.id;
                 return (
@@ -187,17 +205,24 @@ export const Sidebar: React.FC<SidebarProps> = ({
               })}
             </nav>
 
-            <button
-              type="button"
-              onClick={() => {
-                onResetDemo();
-                onCloseMobile();
-              }}
-              className="w-full flex items-center justify-center gap-2 px-3 py-2.5 rounded-xl bg-[#141419] border border-[#22222B] text-xs font-medium text-zinc-300 hover:text-white"
-            >
-              <RotateCcw className="w-3.5 h-3.5" />
-              <span>Restaurar Dados Iniciais</span>
-            </button>
+            <div className="space-y-2 pt-3 border-t border-[#1B1B22]">
+              {userEmail && (
+                <div className="px-2 text-[11px] text-zinc-500 truncate">
+                  {userEmail}
+                </div>
+              )}
+              <button
+                type="button"
+                onClick={() => {
+                  onLogout();
+                  onCloseMobile();
+                }}
+                className="w-full flex items-center justify-center gap-2 px-3 py-2.5 rounded-xl bg-[#141419] border border-[#22222B] text-xs font-medium text-zinc-300 hover:text-red-400"
+              >
+                <LogOut className="w-3.5 h-3.5" />
+                <span>Sair do Painel</span>
+              </button>
+            </div>
           </div>
         </div>
       )}

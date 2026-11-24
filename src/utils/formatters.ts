@@ -11,6 +11,21 @@ export function formatQuotaNumber(num: number): string {
   return String(num).padStart(2, "0");
 }
 
+export function formatFirstName(fullName: string): string {
+  const parts = fullName.trim().split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return "Participante";
+  return parts[0];
+}
+
+export function maskPhoneLGPD(phone: string): string {
+  const digits = phone.replace(/\D/g, "");
+  if (digits.length < 8) return "••••";
+  const local = digits.startsWith("55") && digits.length >= 12 ? digits.slice(2) : digits;
+  const ddd = local.slice(0, 2);
+  const last4 = local.slice(-4);
+  return `(${ddd}) •••••-${last4}`;
+}
+
 export function formatDateTime(isoString: string): string {
   const date = new Date(isoString);
   if (Number.isNaN(date.getTime())) return isoString;
@@ -47,11 +62,7 @@ export function formatPhoneInput(raw: string): string {
 }
 
 export function maskPhoneForStream(phone: string): string {
-  const digits = phone.replace(/\D/g, "");
-  if (digits.length < 8) return phone;
-  const ddd = digits.slice(0, 2);
-  const last4 = digits.slice(-4);
-  return `(${ddd}) *****-${last4}`;
+  return maskPhoneLGPD(phone);
 }
 
 export function cleanPhoneForWhatsApp(phone: string): string {
@@ -75,10 +86,10 @@ export function buildWhatsAppListText(
   const lines = rows.map((row) => {
     const numLabel = formatQuotaNumber(row.number);
     if (row.status === "paga" && row.order) {
-      return `${numLabel} - ${row.order.buyerName} ✅`;
+      return `${numLabel} - ${formatFirstName(row.order.buyerName)} ✅`;
     }
     if (row.status === "reservada" && row.order) {
-      return `${numLabel} - ${row.order.buyerName} ⏳`;
+      return `${numLabel} - ${formatFirstName(row.order.buyerName)} ⏳`;
     }
     return `${numLabel} -`;
   });
@@ -87,7 +98,7 @@ export function buildWhatsAppListText(
   const footer = [
     ``,
     `📊 Confirmados: *${confirmed}/100*`,
-    `Envie seu número + comprovante Pix aqui no grupo para o bot confirmar na hora!`,
+    `Envie seu número + comprovante Pix aqui no grupo para o bot registrar!`,
   ];
 
   return [...header, ...lines, ...footer].join("\n");
@@ -117,12 +128,14 @@ export function buildWhatsAppReceiptText(
   const statusLine =
     order.status === "pago"
       ? "✅ Confirmado na lista"
-      : "⏳ Reservado (aguardando comprovante Pix)";
+      : order.status === "em_analise"
+      ? "🔎 Comprovante em análise"
+      : "⏳ Reservado (aguardando Pix)";
 
   return [
     `*HOLD PRÊMIOS — Confirmação na Rifa*`,
     `Rifa: *${campaign.title}*`,
-    `Nome: ${order.buyerName}`,
+    `Nome: ${formatFirstName(order.buyerName)}`,
     `Números: *${formattedNums}*`,
     `Total: *${formatCurrency(order.totalAmount)}*`,
     `Status: ${statusLine}`,
@@ -140,7 +153,7 @@ export function buildWhatsAppWinnerText(
     `🏆 *PARABÉNS, ${buyerName.toUpperCase()}!*`,
     `Você ganhou o *${prizePosition}º Prêmio (${prizeTitle})* na rifa *${campaignTitle}* da HOLD PRÊMIOS com o número *${quotaLabel}*!`,
     ``,
-    `Responda esta mensagem para combinarmos a retirada na Hold Prêmios ou envio.`,
+    `Responda esta mensagem para combinarmos a retirada ou entrega.`,
   ].join("\n");
 }
 
@@ -171,12 +184,14 @@ export function exportOrdersToCSV(
   const campaignMap = new Map(campaigns.map((c) => [c.id, c]));
   const headers = [
     "Pedido",
+    "Codigo",
     "Rifa",
     "Participante",
     "WhatsApp",
     "Numeros",
     "Qtd",
     "Total (BRL)",
+    "Pago (BRL)",
     "Pagamento",
     "Status",
     "Comprovante",
@@ -188,15 +203,19 @@ export function exportOrdersToCSV(
     const numsStr = o.quotas.map((q) => formatQuotaNumber(q)).join(" | ");
     return [
       o.id,
+      o.code || "-",
       camp?.title ?? "Rifa removida",
       o.buyerName,
       o.buyerPhone,
       numsStr,
       String(o.quotas.length),
       o.totalAmount.toFixed(2).replace(".", ","),
+      (o.paidAmount ?? (o.status === "pago" ? o.totalAmount : 0))
+        .toFixed(2)
+        .replace(".", ","),
       o.paymentMethod.toUpperCase(),
       o.status.toUpperCase(),
-      o.receipt ? (o.receipt.txId || "Anexado") : "Sem anexo",
+      o.receipt ? o.receipt.e2e || o.receipt.txId || "Anexado" : "Sem anexo",
       new Date(o.createdAt).toLocaleString("pt-BR"),
     ];
   });

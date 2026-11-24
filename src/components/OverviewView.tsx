@@ -105,14 +105,19 @@ export const OverviewView: React.FC<OverviewViewProps> = ({
       displayedCampaign
         ? orders.filter(
             (o) =>
-              o.campaignId === displayedCampaign.id && o.status !== "cancelado"
+              o.campaignId === displayedCampaign.id &&
+              o.status !== "cancelado" &&
+              o.status !== "expirado"
           )
         : [],
     [displayedCampaign, orders]
   );
 
   const pendingOrdersCount = useMemo(
-    () => campaignOrders.filter((o) => o.status === "pendente").length,
+    () =>
+      campaignOrders.filter(
+        (o) => o.status === "pendente" || o.status === "em_analise"
+      ).length,
     [campaignOrders]
   );
 
@@ -944,11 +949,17 @@ export const OverviewView: React.FC<OverviewViewProps> = ({
                           className={`text-[11px] font-medium ${
                             order.status === "pago"
                               ? "text-emerald-400"
+                              : order.status === "em_analise"
+                              ? "text-[#FFB000]"
                               : "text-amber-400"
                           }`}
                         >
                           {order.quotas.length}x ·{" "}
-                          {order.status === "pago" ? "Pago" : "Pendente"}
+                          {order.status === "pago"
+                            ? "Pago"
+                            : order.status === "em_analise"
+                            ? "Em análise"
+                            : "Pendente"}
                         </div>
                       </div>
                     </div>

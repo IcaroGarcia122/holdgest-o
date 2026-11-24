@@ -2,6 +2,7 @@ import React, { useState, useEffect } from "react";
 import { X, Check, AlertCircle } from "lucide-react";
 import { DEFAULT_TEN_PRIZES, PRIZE_GALLERY } from "../data/seedData";
 import {
+  ConfirmationMode,
   DrawMethod,
   PrizeStockItem,
   RaffleCampaign,
@@ -26,7 +27,11 @@ interface CampaignModalProps {
     ticketPrice: number;
     drawMethod: DrawMethod;
     scheduledDrawDate: string;
-  }) => void;
+    pixKey: string;
+    pixBeneficiary: string;
+    reservationMinutes: number;
+    confirmationMode: ConfirmationMode;
+  }) => Promise<void> | void;
 }
 
 export const CampaignModal: React.FC<CampaignModalProps> = ({
@@ -45,6 +50,11 @@ export const CampaignModal: React.FC<CampaignModalProps> = ({
   const [ticketPrice, setTicketPrice] = useState("120");
   const [drawMethod, setDrawMethod] = useState<DrawMethod>("sorteio_ao_vivo");
   const [scheduledDrawDate, setScheduledDrawDate] = useState("2026-11-24T21:00");
+  const [pixKey, setPixKey] = useState("");
+  const [pixBeneficiary, setPixBeneficiary] = useState("");
+  const [reservationMinutes, setReservationMinutes] = useState("30");
+  const [confirmationMode, setConfirmationMode] =
+    useState<ConfirmationMode>("manual");
   const [prizes, setPrizes] = useState<RafflePrize[]>(DEFAULT_TEN_PRIZES);
   const [error, setError] = useState("");
 
@@ -58,6 +68,10 @@ export const CampaignModal: React.FC<CampaignModalProps> = ({
       setTicketPrice(String(editingCampaign.ticketPrice));
       setDrawMethod(editingCampaign.drawMethod);
       setScheduledDrawDate(editingCampaign.scheduledDrawDate.slice(0, 16));
+      setPixKey(editingCampaign.pixKey || "");
+      setPixBeneficiary(editingCampaign.pixBeneficiary || "");
+      setReservationMinutes(String(editingCampaign.reservationMinutes || 30));
+      setConfirmationMode(editingCampaign.confirmationMode || "manual");
       setPrizes(
         editingCampaign.prizes.length === 10
           ? editingCampaign.prizes
@@ -71,6 +85,10 @@ export const CampaignModal: React.FC<CampaignModalProps> = ({
       setTicketPrice("120");
       setDrawMethod("sorteio_ao_vivo");
       setScheduledDrawDate("2026-11-24T21:00");
+      setPixKey("");
+      setPixBeneficiary("HOLD PREMIOS");
+      setReservationMinutes("30");
+      setConfirmationMode("manual");
       setPrizes(DEFAULT_TEN_PRIZES);
     }
     setError("");
@@ -120,7 +138,7 @@ export const CampaignModal: React.FC<CampaignModalProps> = ({
     );
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!title.trim()) {
       setError("Informe o nome da rifa.");
@@ -138,7 +156,7 @@ export const CampaignModal: React.FC<CampaignModalProps> = ({
       stockItemId: p.stockItemId,
     }));
 
-    onSave({
+    await onSave({
       title: title.trim(),
       weekLabel: weekLabel.trim() || "Rifa da Semana",
       whatsappGroupName: whatsappGroupName.trim() || defaultGroupName,
@@ -147,6 +165,10 @@ export const CampaignModal: React.FC<CampaignModalProps> = ({
       ticketPrice: parsedPrice,
       drawMethod,
       scheduledDrawDate,
+      pixKey: pixKey.trim(),
+      pixBeneficiary: pixBeneficiary.trim(),
+      reservationMinutes: Math.max(5, Number(reservationMinutes) || 30),
+      confirmationMode,
     });
     onClose();
   };
@@ -164,8 +186,8 @@ export const CampaignModal: React.FC<CampaignModalProps> = ({
               {editingCampaign ? "Editar Rifa" : "Criar Rifa Semanal (1–100)"}
             </h2>
             <p className="text-xs text-zinc-400 mt-0.5">
-              Rifa semanal com 100 números (1–100) e 10 prêmios vinculados ao
-              estoque.
+              Rifa semanal com 100 números (1–100), regras de Pix e 10 prêmios
+              vinculados ao estoque.
             </p>
           </div>
           <button
@@ -286,6 +308,62 @@ export const CampaignModal: React.FC<CampaignModalProps> = ({
                 onChange={(e) => setScheduledDrawDate(e.target.value)}
                 className="w-full px-3.5 py-2.5 rounded-xl bg-[#18181F] border border-[#262630] text-sm font-mono-tabular text-white focus:outline-none focus:border-[#FF7900]"
               />
+            </div>
+
+            <div>
+              <label className="block text-xs font-medium text-zinc-300 mb-1.5">
+                Chave Pix
+              </label>
+              <input
+                type="text"
+                value={pixKey}
+                onChange={(e) => setPixKey(e.target.value)}
+                placeholder="CPF, CNPJ, telefone ou aleatória"
+                className="w-full px-3.5 py-2.5 rounded-xl bg-[#18181F] border border-[#262630] text-sm font-mono-tabular text-white focus:outline-none focus:border-[#FF7900]"
+              />
+            </div>
+
+            <div>
+              <label className="block text-xs font-medium text-zinc-300 mb-1.5">
+                Favorecido Pix
+              </label>
+              <input
+                type="text"
+                value={pixBeneficiary}
+                onChange={(e) => setPixBeneficiary(e.target.value)}
+                placeholder="Nome exibido no comprovante"
+                className="w-full px-3.5 py-2.5 rounded-xl bg-[#18181F] border border-[#262630] text-sm text-white focus:outline-none focus:border-[#FF7900]"
+              />
+            </div>
+
+            <div>
+              <label className="block text-xs font-medium text-zinc-300 mb-1.5">
+                Tempo de Reserva (minutos)
+              </label>
+              <input
+                type="number"
+                min="5"
+                max="1440"
+                value={reservationMinutes}
+                onChange={(e) => setReservationMinutes(e.target.value)}
+                className="w-full px-3.5 py-2.5 rounded-xl bg-[#18181F] border border-[#262630] text-sm font-mono-tabular text-white focus:outline-none focus:border-[#FF7900]"
+              />
+            </div>
+
+            <div>
+              <label className="block text-xs font-medium text-zinc-300 mb-1.5">
+                Modo de Confirmação
+              </label>
+              <select
+                value={confirmationMode}
+                onChange={(e) =>
+                  setConfirmationMode(e.target.value as ConfirmationMode)
+                }
+                className="w-full px-3.5 py-2.5 rounded-xl bg-[#18181F] border border-[#262630] text-sm text-white focus:outline-none focus:border-[#FF7900]"
+              >
+                <option value="manual">Manual (aprovação no painel)</option>
+                <option value="banco">Banco (E2E + webhook Pix)</option>
+              </select>
             </div>
           </div>
 

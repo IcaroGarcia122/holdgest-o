@@ -14,6 +14,8 @@ import {
   ChevronDown,
   ChevronUp,
   X,
+  AlertTriangle,
+  RotateCcw,
 } from "lucide-react";
 import {
   PaymentMethod,
@@ -26,8 +28,10 @@ import {
 import {
   buildWhatsAppListText,
   formatCurrency,
+  formatFirstName,
   formatPhoneInput,
   formatQuotaNumber,
+  maskPhoneLGPD,
 } from "../utils/formatters";
 import { ReceiptModal } from "./ReceiptModal";
 import { PrizeImage } from "./PrizeImage";
@@ -53,14 +57,18 @@ interface RaffleList100ViewProps {
     paymentMethod: PaymentMethod;
     markAsPaid: boolean;
     receipt?: ReceiptAttachment;
-  }) => { ok: boolean; order?: RaffleOrder; error?: string };
-  onConfirmPayment: (orderId: string, receipt?: ReceiptAttachment) => void;
+  }) => Promise<{ ok: boolean; order?: RaffleOrder; error?: string }>;
+  onConfirmPayment: (
+    orderId: string,
+    receipt?: ReceiptAttachment
+  ) => Promise<void> | void;
+  onRevertPayment: (orderId: string) => Promise<void> | void;
   onAttachReceipt: (
     orderId: string,
     receipt: ReceiptAttachment,
     markAsPaid?: boolean
-  ) => void;
-  onCancelOrder: (orderId: string) => void;
+  ) => Promise<void> | void;
+  onCancelOrder: (orderId: string) => Promise<void> | void;
 }
 
 export const RaffleList100View: React.FC<RaffleList100ViewProps> = ({
@@ -71,6 +79,7 @@ export const RaffleList100View: React.FC<RaffleList100ViewProps> = ({
   getCampaignStats,
   onCreateOrder,
   onConfirmPayment,
+  onRevertPayment,
   onAttachReceipt,
   onCancelOrder,
 }) => {
@@ -88,6 +97,7 @@ export const RaffleList100View: React.FC<RaffleList100ViewProps> = ({
   const [receiptPreview, setReceiptPreview] = useState<string>("");
   const [receiptFileName, setReceiptFileName] = useState<string>("");
   const [formError, setFormError] = useState("");
+  const [submitting, setSubmitting] = useState(false);
 
   const attachInputRef = useRef<HTMLInputElement | null>(null);
   const [attachingOrderId, setAttachingOrderId] = useState<string | null>(null);
@@ -151,7 +161,8 @@ export const RaffleList100View: React.FC<RaffleList100ViewProps> = ({
     if (campaign.status !== "ativa") return;
     const free = rows
       .filter((r) => r.status === "disponivel")
-      .map((r) => r.number);
+      .map((r) => r.number)
+      .slice(0, 20);
     setSelectedNumbers(free);
   };
 
@@ -191,9 +202,9 @@ export const RaffleList100View: React.FC<RaffleList100ViewProps> = ({
     if (!file || !attachingOrderId) return;
     const targetId = attachingOrderId;
     const reader = new FileReader();
-    reader.onload = () => {
+    reader.onload = async () => {
       if (typeof reader.result === "string") {
-        onAttachReceipt(
+        await onAttachReceipt(
           targetId,
           {
             imageUrl: reader.result,
@@ -211,7 +222,7 @@ export const RaffleList100View: React.FC<RaffleList100ViewProps> = ({
     reader.readAsDataURL(file);
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setFormError("");
     if (selectedNumbers.length === 0) {
@@ -233,7 +244,8 @@ export const RaffleList100View: React.FC<RaffleList100ViewProps> = ({
         }
       : undefined;
 
-    const res = onCreateOrder({
+    setSubmitting(true);
+    const res = await onCreateOrder({
       campaignId: campaign.id,
       buyerName: buyerName.trim(),
       buyerPhone: buyerPhone.trim() || "(11) 90000-0000",
@@ -242,6 +254,7 @@ export const RaffleList100View: React.FC<RaffleList100ViewProps> = ({
       markAsPaid,
       receipt,
     });
+    setSubmitting(false);
 
     if (!res.ok) {
       setFormError(res.error ?? "Erro ao registrar na lista.");
@@ -272,7 +285,8 @@ export const RaffleList100View: React.FC<RaffleList100ViewProps> = ({
             Lista 1–100
           </h1>
           <p className="text-xs sm:text-sm text-zinc-400 mt-1">
-            Participantes confirmados com comprovante anexado ao lado do nome.
+            Participantes (primeiro nome + telefone mascarado LGPD) e
+            comprovante anexado ao lado.
           </p>
         </div>
 
@@ -475,8 +489,14 @@ export const RaffleList100View: React.FC<RaffleList100ViewProps> = ({
                         <td className="py-2.5 px-4">
                           {order ? (
                             <div className="flex flex-wrap items-center gap-2.5">
-                              <span className="font-medium text-white text-[13px]">
-                                {order.buyerName}
+                              <span
+                                title={order.buyerName}
+                                className="font-medium text-white text-[13px]"
+                              >
+                                {formatFirstName(order.buyerName)}
+                              </span>
+                              <span className="text-[11px] font-mono-tabular text-zinc-500">
+                                {maskPhoneLGPD(order.buyerPhone)}
                               </span>
 
                               {order.receipt ? (
@@ -518,6 +538,11 @@ export const RaffleList100View: React.FC<RaffleList100ViewProps> = ({
                               <CheckCircle2 className="w-3.5 h-3.5" />
                               <span>Confirmado</span>
                             </span>
+                          ) : order?.status === "em_analise" ? (
+                            <span className="inline-flex items-center gap-1.5 text-xs font-medium text-[#FFB000]">
+                              <AlertTriangle className="w-3.5 h-3.5" />
+                              <span>Em Análise</span>
+                            </span>
                           ) : row.status === "reservada" ? (
                             <span className="inline-flex items-center gap-1.5 text-xs font-medium text-amber-400">
                               <Clock className="w-3.5 h-3.5" />
@@ -553,6 +578,16 @@ export const RaffleList100View: React.FC<RaffleList100ViewProps> = ({
                                   Confirmar
                                 </button>
                               )}
+                              {order && row.status === "paga" && (
+                                <button
+                                  type="button"
+                                  onClick={() => onRevertPayment(order.id)}
+                                  title="Reverter confirmação"
+                                  className="p-1.5 rounded-full text-zinc-400 hover:text-amber-300 hover:bg-[#1B1B22]"
+                                >
+                                  <RotateCcw className="w-3.5 h-3.5" />
+                                </button>
+                              )}
                               {order && (
                                 <button
                                   type="button"
@@ -583,7 +618,7 @@ export const RaffleList100View: React.FC<RaffleList100ViewProps> = ({
                 Registrar Participante
               </h3>
               <p className="text-xs text-zinc-400 mt-0.5">
-                Selecione números livres à esquerda.
+                Selecione números livres à esquerda (máx. 20).
               </p>
             </div>
             {stats.availableCount > 0 && campaign.status === "ativa" && (
@@ -592,7 +627,7 @@ export const RaffleList100View: React.FC<RaffleList100ViewProps> = ({
                 onClick={handleSelectAllAvailable}
                 className="text-xs font-medium text-[#FFB000] hover:text-[#FF7900] whitespace-nowrap"
               >
-                Todos livres
+                Puxar livres
               </button>
             )}
           </div>
@@ -635,14 +670,14 @@ export const RaffleList100View: React.FC<RaffleList100ViewProps> = ({
                   type="text"
                   value={buyerName}
                   onChange={(e) => setBuyerName(e.target.value)}
-                  placeholder="Nome para aparecer na lista"
+                  placeholder="Nome completo"
                   className="w-full px-3.5 py-2 rounded-xl bg-[#18181F] border border-[#272730] text-sm text-white placeholder:text-zinc-600 focus:outline-none focus:border-[#FF7900]"
                 />
               </div>
 
               <div>
                 <label className="block text-xs font-medium text-zinc-300 mb-1">
-                  WhatsApp (opcional)
+                  WhatsApp
                 </label>
                 <input
                   type="tel"
@@ -700,10 +735,10 @@ export const RaffleList100View: React.FC<RaffleList100ViewProps> = ({
 
               <button
                 type="submit"
-                disabled={campaign.status !== "ativa"}
+                disabled={campaign.status !== "ativa" || submitting}
                 className="w-full py-2.5 rounded-full bg-[#FF7900] hover:bg-[#FFB000] text-black text-xs font-semibold transition-colors disabled:opacity-40"
               >
-                Adicionar na Lista 1–100
+                {submitting ? "Salvando..." : "Adicionar na Lista 1–100"}
               </button>
             </form>
           </div>

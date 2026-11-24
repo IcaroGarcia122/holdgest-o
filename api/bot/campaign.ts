@@ -39,10 +39,14 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
       .eq("status", "disponivel"),
     supabase
       .from("bot_settings")
-      .select("admin_phones, group_jid")
+      .select(
+        "admin_phones, group_jid, ai_min_confidence, ai_max_amount, ai_max_per_phone_day"
+      )
       .eq("id", 1)
       .maybeSingle(),
   ]);
+
+  const confirmationMode = camp.confirmation_mode || "manual";
 
   return sendJson(res, 200, {
     id: camp.id,
@@ -54,7 +58,14 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
     pixKey: camp.pix_key || "",
     pixBeneficiary: camp.pix_beneficiary || "",
     reservationMinutes: camp.reservation_minutes ?? 30,
-    confirmationMode: camp.confirmation_mode || "manual",
+    confirmationMode,
+    ...(confirmationMode === "ia"
+      ? {
+          aiMaxAmount: Number(settings?.ai_max_amount ?? 100),
+          aiMinConfidence: Number(settings?.ai_min_confidence ?? 0.9),
+          aiMaxPerPhoneDay: Number(settings?.ai_max_per_phone_day ?? 5),
+        }
+      : {}),
     availableCount: availableCount ?? 0,
     adminPhones: settings?.admin_phones ?? [],
     groupJid: settings?.group_jid ?? "",

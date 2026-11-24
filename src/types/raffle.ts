@@ -15,7 +15,7 @@ export type PaymentMethod = "pix" | "dinheiro" | "cartao";
 
 export type DeliveryStatus = "aguardando" | "retirado_bar" | "enviado";
 
-export type ConfirmationMode = "banco" | "manual";
+export type ConfirmationMode = "banco" | "manual" | "ia";
 
 export type ReceiptStatus =
   | "orfao"
@@ -66,6 +66,7 @@ export interface RafflePrize {
 
 export interface ReceiptAttachment {
   id?: string;
+  code?: string;
   imageUrl?: string;
   imagePath?: string;
   fileName?: string;
@@ -78,12 +79,14 @@ export interface ReceiptAttachment {
   reasons?: string[];
   confidence?: number;
   verifiedBy: "ai_bot" | "manual";
+  autoConfirmed?: boolean;
   summary?: string;
   uploadedAt: string;
 }
 
 export interface ReceiptRecord {
   id: string;
+  code?: string;
   orderId?: string | null;
   campaignId?: string | null;
   buyerPhone: string;
@@ -101,6 +104,8 @@ export interface ReceiptRecord {
   signedUrl?: string | null;
   fileName?: string | null;
   verifiedBy: "ai_bot" | "manual";
+  autoConfirmed?: boolean;
+  summarySentAt?: string | null;
   summary?: string | null;
   decidedBy?: string | null;
   decidedAt?: string | null;
@@ -194,7 +199,9 @@ export interface BotSettings {
   groupJid?: string;
   outboundWebhookUrl: string;
   adminPhones?: string[];
-  autoConfirmWithAi: boolean;
+  aiMinConfidence?: number;
+  aiMaxAmount?: number;
+  aiMaxPerPhoneDay?: number;
 }
 
 export interface QuotaRowInfo {

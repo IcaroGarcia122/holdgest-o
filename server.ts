@@ -9,6 +9,8 @@ import botOrdersHandler from "./api/bot/orders.js";
 import botOrderCancelHandler from "./api/bot/orders/[id]/cancel.js";
 import botReceiptsHandler from "./api/bot/receipts.js";
 import botPixHandler from "./api/bot/pix.js";
+import botAdminHandler from "./api/bot/admin.js";
+import botSummaryDailyHandler from "./api/bot/summary/daily.js";
 import cronExpireHandler from "./api/cron/expire.js";
 import authHandler from "./api/auth/[action].js";
 import adminHandler from "./api/admin/[resource].js";
@@ -50,6 +52,9 @@ async function startServer() {
   app.all("/api/bot/orders/:id/cancel", wrapHandler(botOrderCancelHandler));
   app.all("/api/bot/receipts", wrapHandler(botReceiptsHandler));
   app.all("/api/bot/pix", wrapHandler(botPixHandler));
+  app.all("/api/bot/admin/pending", wrapHandler(botAdminHandler));
+  app.all("/api/bot/admin/:resource/:ref/:action", wrapHandler(botAdminHandler));
+  app.all("/api/bot/summary/daily", wrapHandler(botSummaryDailyHandler));
   app.all("/api/cron/expire", wrapHandler(cronExpireHandler));
 
   // Admin Auth & Panel Routes (Supabase Auth session)

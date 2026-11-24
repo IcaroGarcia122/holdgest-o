@@ -9,7 +9,10 @@ Sistema administrativo e API transacional para rifas semanais (Lista 1–100, 10
 - **Fonte única da verdade:** todas as regras críticas (reserva atômica `FOR UPDATE`, prevenção de duplicidade por `e2e` e `image_hash`, conciliação bancária, expiração e auditoria) vivem no PostgreSQL e nas rotas serverless (`/api/*`).
 - **Banco bloqueado para `anon` e `authenticated`:** o `schema.sql` ativa RLS e revoga todos os privilégios de `anon` e `authenticated` em tabelas e funções RPC. Todo acesso ao banco ocorre exclusivamente no servidor via `SUPABASE_SECRET_KEY`; o front usa o Supabase Auth somente para o login do painel e consome apenas `/api/*`.
 - **Chaves isoladas no servidor:** `SUPABASE_SECRET_KEY` e `BOT_API_TOKEN` nunca vão para o navegador (`VITE_*` não é utilizado).
-- **Regra de ouro:** em `confirmation_mode = 'banco'`, uma imagem sozinha **nunca** confirma pagamento; o E2E precisa bater com um registro em `pix_received` e o valor creditado é sempre o recebido pelo banco. Em modo `'manual'`, o comprovante fica `em_analise` até aprovação no painel.
+- **Modos de confirmação (`banco` | `manual` | `ia`):**
+  - **`banco` (mais seguro):** uma imagem sozinha **nunca** confirma pagamento; o E2E precisa bater com um registro em `pix_received` (webhook do PSP) e o valor creditado é sempre o recebido pelo banco.
+  - **`manual`:** todo comprovante recebido fica `em_analise` até aprovação do administrador no painel ou via WhatsApp Admin.
+  - **`ia` (regras rígidas):** a função `register_receipt` confirma automaticamente (`auto_confirmed = true`) apenas quando todas as travas passam no banco (`preStatus = 'ok'`, confiança `>= ai_min_confidence`, valor do pedido `<= ai_max_amount`, dentro do limite diário `ai_max_per_phone_day`, sem duplicidade de `e2e`/`image_hash` e sem divergência de recebedor/valor/data). Qualquer falha cai para `em_analise` ou `revisao`. **Atenção:** a IA pode ser enganada por comprovante falso bem feito — confira sempre o resumo diário (`/api/bot/summary/daily`) com o extrato do banco e use **Reverter** caso haja divergência.
 - **Imagens privadas:** prints de comprovante são salvos no bucket privado `receipts` do Supabase Storage e exibidos no painel via URL assinada temporária.
 
 ---
@@ -65,6 +68,8 @@ Todas as rotas do bot exigem o header `Authorization: Bearer $BOT_API_TOKEN`.
 
 ### 5.1 Consultar campanha ativa e regras Pix (`GET /api/bot/campaign`)
 
+Retorna `confirmationMode` (`banco` | `manual` | `ia`). Quando `confirmationMode === "ia"`, inclui também `aiMaxAmount`, `aiMinConfidence` e `aiMaxPerPhoneDay`.
+
 ```bash
 curl -sS -X GET "$APP_URL/api/bot/campaign" \
   -H "Authorization: Bearer $BOT_API_TOKEN"
@@ -85,6 +90,8 @@ curl -sS -X GET "$APP_URL/api/bot/orders?phone=5511999999999" \
 ```
 
 ### 5.4 Criar reserva de números ou sorteio automático (`POST /api/bot/orders`)
+
+Retorna `201` com `{ "order": ..., "payment": ... }`.
 
 ```bash
 curl -sS -X POST "$APP_URL/api/bot/orders" \
@@ -113,6 +120,8 @@ curl -sS -X POST "$APP_URL/api/bot/orders/ord-123/cancel" \
 ```
 
 ### 5.6 Enviar comprovante analisado pelo agente n8n (`POST /api/bot/receipts`)
+
+Retorna também `receiptCode` (código curto único do comprovante, ex.: `C3F9A`) e `autoConfirmed` (`true` quando confirmado automaticamente em modo `ia`).
 
 ```bash
 curl -sS -X POST "$APP_URL/api/bot/receipts" \
@@ -155,3 +164,101 @@ curl -sS -X POST "$APP_URL/api/bot/pix" \
 curl -sS -X POST "$APP_URL/api/cron/expire" \
   -H "Authorization: Bearer $BOT_API_TOKEN"
 ```
+
+### 5.9 Resumo diário de confirmações automáticas da IA (`POST /api/bot/summary/daily`)
+
+Chama `ai_daily_summary(p_mark)` e retorna `{ count, total, items }` com os comprovantes confirmados pela IA ainda não listados, marcando-os como enviados (`summary_sent_at`). Use `?peek=1` para consultar sem marcar como listado.
+
+```bash
+# Marca como listado após consultar
+curl -sS -X POST "$APP_URL/api/bot/summary/daily" \
+  -H "Authorization: Bearer $BOT_API_TOKEN"
+
+# Apenas consulta sem marcar como listado
+curl -sS -X POST "$APP_URL/api/bot/summary/daily?peek=1" \
+  -H "Authorization: Bearer $BOT_API_TOKEN"
+```
+
+---
+
+## 6. Conferência e Gestão via WhatsApp (Admin Bot — n8n)
+
+Todas as rotas abaixo exigem `Authorization: Bearer $BOT_API_TOKEN` e validam se o telefone `actor` (normalizado) está listado em `bot_settings.admin_phones` (caso contrário retornam `403 { "error": "not_admin" }`). O parâmetro `:ref` aceita código curto (`C3F9A` / `R3F9A`, sem diferenciar maiúsculas) ou `id`.
+
+### 6.1 Listar pendências administrativas (`GET /api/bot/admin/pending?actor=`)
+
+```bash
+curl -sS -X GET "$APP_URL/api/bot/admin/pending?actor=5543999999999" \
+  -H "Authorization: Bearer $BOT_API_TOKEN"
+```
+
+### 6.2 Aprovar comprovante (`POST /api/bot/admin/receipts/:ref/approve`)
+
+```bash
+curl -sS -X POST "$APP_URL/api/bot/admin/receipts/C3F9A/approve" \
+  -H "Authorization: Bearer $BOT_API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "actor": "5543999999999",
+    "amount": 20.00
+  }'
+```
+
+### 6.3 Rejeitar comprovante (`POST /api/bot/admin/receipts/:ref/reject`)
+
+```bash
+curl -sS -X POST "$APP_URL/api/bot/admin/receipts/C3F9A/reject" \
+  -H "Authorization: Bearer $BOT_API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "actor": "5543999999999",
+    "reason": "Comprovante ilegível ou valor divergente."
+  }'
+```
+
+### 6.4 Vincular comprovante órfão/ambíguo a um pedido (`POST /api/bot/admin/receipts/:ref/link`)
+
+```bash
+curl -sS -X POST "$APP_URL/api/bot/admin/receipts/C3F9A/link" \
+  -H "Authorization: Bearer $BOT_API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "actor": "5543999999999",
+    "orderCode": "R3F9A"
+  }'
+```
+
+### 6.5 Marcar pedido como pago manualmente (`POST /api/bot/admin/orders/:ref/pay`)
+
+```bash
+curl -sS -X POST "$APP_URL/api/bot/admin/orders/R3F9A/pay" \
+  -H "Authorization: Bearer $BOT_API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "actor": "5543999999999",
+    "amount": 20.00
+  }'
+```
+
+### 6.6 Cancelar pedido e liberar números (`POST /api/bot/admin/orders/:ref/cancel`)
+
+```bash
+curl -sS -X POST "$APP_URL/api/bot/admin/orders/R3F9A/cancel" \
+  -H "Authorization: Bearer $BOT_API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "actor": "5543999999999"
+  }'
+```
+
+### 6.7 Reverter confirmação feita por engano (`POST /api/bot/admin/orders/:ref/revert`)
+
+```bash
+curl -sS -X POST "$APP_URL/api/bot/admin/orders/R3F9A/revert" \
+  -H "Authorization: Bearer $BOT_API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "actor": "5543999999999"
+  }'
+```
+

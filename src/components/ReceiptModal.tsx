@@ -92,21 +92,29 @@ export const ReceiptModal: React.FC<ReceiptModalProps> = ({
                 </span>
               </div>
             )}
-            <div className="px-4 py-2.5 flex items-center justify-between">
+            <div className="px-4 py-2.5 flex items-center justify-between gap-2">
               <span className="text-zinc-400">Conferência</span>
-              <span className="inline-flex items-center gap-1.5 font-medium text-white">
-                {receipt.verifiedBy === "ai_bot" ? (
-                  <>
-                    <Bot className="w-3.5 h-3.5 text-[#FF7900]" />
-                    <span>Agente de IA (Grupo WhatsApp)</span>
-                  </>
-                ) : (
-                  <>
-                    <UserCheck className="w-3.5 h-3.5 text-emerald-400" />
-                    <span>Anexado Manualmente</span>
-                  </>
+              <div className="flex flex-wrap items-center justify-end gap-2">
+                {receipt.autoConfirmed && (
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-purple-500/15 border border-purple-500/40 text-[10px] font-semibold text-purple-300">
+                    <Bot className="w-3 h-3" />
+                    <span>Confirmado pela IA</span>
+                  </span>
                 )}
-              </span>
+                <span className="inline-flex items-center gap-1.5 font-medium text-white">
+                  {receipt.verifiedBy === "ai_bot" ? (
+                    <>
+                      <Bot className="w-3.5 h-3.5 text-[#FF7900]" />
+                      <span>Agente de IA (Grupo WhatsApp)</span>
+                    </>
+                  ) : (
+                    <>
+                      <UserCheck className="w-3.5 h-3.5 text-emerald-400" />
+                      <span>Anexado Manualmente</span>
+                    </>
+                  )}
+                </span>
+              </div>
             </div>
             <div className="px-4 py-2.5 flex items-center justify-between">
               <span className="text-zinc-400">Anexado em</span>

@@ -1,5 +1,14 @@
 import React, { useEffect, useState } from "react";
-import { Check, DatabaseBackup, KeyRound, Save, ShieldCheck, Webhook } from "lucide-react";
+import {
+  AlertTriangle,
+  Bot,
+  Check,
+  DatabaseBackup,
+  KeyRound,
+  Save,
+  ShieldCheck,
+  Webhook,
+} from "lucide-react";
 import {
   BotSettings,
   ConfirmationMode,
@@ -37,8 +46,14 @@ export const BotSettingsView: React.FC<BotSettingsViewProps> = ({
   const [adminPhonesText, setAdminPhonesText] = useState(
     (botSettings.adminPhones || []).join(", ")
   );
-  const [autoConfirmWithAi, setAutoConfirmWithAi] = useState(
-    botSettings.autoConfirmWithAi
+  const [aiMinConfidence, setAiMinConfidence] = useState(
+    String(botSettings.aiMinConfidence ?? 0.9)
+  );
+  const [aiMaxAmount, setAiMaxAmount] = useState(
+    String(botSettings.aiMaxAmount ?? 100)
+  );
+  const [aiMaxPerPhoneDay, setAiMaxPerPhoneDay] = useState(
+    String(botSettings.aiMaxPerPhoneDay ?? 5)
   );
 
   const [pixKey, setPixKey] = useState(activeCampaign?.pixKey || "");
@@ -64,7 +79,9 @@ export const BotSettingsView: React.FC<BotSettingsViewProps> = ({
     setGroupJid(botSettings.groupJid || "");
     setOutboundWebhookUrl(botSettings.outboundWebhookUrl || "");
     setAdminPhonesText((botSettings.adminPhones || []).join(", "));
-    setAutoConfirmWithAi(botSettings.autoConfirmWithAi);
+    setAiMinConfidence(String(botSettings.aiMinConfidence ?? 0.9));
+    setAiMaxAmount(String(botSettings.aiMaxAmount ?? 100));
+    setAiMaxPerPhoneDay(String(botSettings.aiMaxPerPhoneDay ?? 5));
   }, [botSettings]);
 
   useEffect(() => {
@@ -77,6 +94,32 @@ export const BotSettingsView: React.FC<BotSettingsViewProps> = ({
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
     setStatusMsg(null);
+
+    const parsedConfidence = Number(aiMinConfidence.replace(",", "."));
+    if (!Number.isFinite(parsedConfidence) || parsedConfidence < 0.5 || parsedConfidence > 1) {
+      setStatusMsg({
+        type: "err",
+        text: "A confiança mínima da IA deve estar entre 0.5 e 1.0.",
+      });
+      return;
+    }
+    const parsedMaxAmount = Number(aiMaxAmount.replace(",", "."));
+    if (!Number.isFinite(parsedMaxAmount) || parsedMaxAmount <= 0) {
+      setStatusMsg({
+        type: "err",
+        text: "O valor máximo por pedido na IA deve ser maior que zero.",
+      });
+      return;
+    }
+    const parsedMaxPerDay = Number(aiMaxPerPhoneDay);
+    if (!Number.isInteger(parsedMaxPerDay) || parsedMaxPerDay < 1) {
+      setStatusMsg({
+        type: "err",
+        text: "O limite diário por telefone deve ser um número inteiro maior ou igual a 1.",
+      });
+      return;
+    }
+
     setSaving(true);
     const adminPhones = adminPhonesText
       .split(/[,\n]/)
@@ -88,7 +131,9 @@ export const BotSettingsView: React.FC<BotSettingsViewProps> = ({
       groupJid: groupJid.trim(),
       outboundWebhookUrl: outboundWebhookUrl.trim(),
       adminPhones,
-      autoConfirmWithAi,
+      aiMinConfidence: parsedConfidence,
+      aiMaxAmount: parsedMaxAmount,
+      aiMaxPerPhoneDay: parsedMaxPerDay,
       ...(activeCampaign
         ? {
             activeCampaignId: activeCampaign.id,
@@ -140,7 +185,7 @@ export const BotSettingsView: React.FC<BotSettingsViewProps> = ({
             Configurações do Bot & Pix
           </h1>
           <p className="text-xs sm:text-sm text-zinc-400 mt-1">
-            Chave Pix da rifa ativa, modo de confirmação (Banco vs. Manual),
+            Chave Pix da rifa ativa, modo de confirmação (Banco, Manual ou IA),
             grupo WhatsApp e webhook de saída para o n8n.
           </p>
         </div>
@@ -247,23 +292,89 @@ export const BotSettingsView: React.FC<BotSettingsViewProps> = ({
                     }
                     className="w-full px-3.5 py-2.5 rounded-xl bg-[#18181F] border border-[#262630] text-sm text-white focus:outline-none focus:border-[#FF7900]"
                   >
-                    <option value="manual">Manual (aprovação no painel)</option>
-                    <option value="banco">Banco (E2E + webhook Pix)</option>
+                    <option value="banco">Banco (Pix recebido)</option>
+                    <option value="manual">Manual (admin confere)</option>
+                    <option value="ia">IA (regras rígidas)</option>
                   </select>
                 </div>
               </div>
 
+              {confirmationMode === "ia" && (
+                <div className="rounded-xl bg-red-500/10 border border-red-500/45 p-3.5 text-xs text-red-300 flex items-start gap-2.5">
+                  <AlertTriangle className="w-4 h-4 text-red-400 shrink-0 mt-0.5" />
+                  <span>
+                    A IA pode ser enganada por comprovante falso bem feito.
+                    Confira o resumo diário com o extrato do banco.
+                  </span>
+                </div>
+              )}
+
               <div className="rounded-xl bg-[#0D0D11] border border-[#1E1E26] p-3 text-[11px] text-zinc-400 flex items-start gap-2">
                 <ShieldCheck className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
                 <span>
-                  Regra de ouro: uma imagem de comprovante sozinha nunca confirma
-                  o número. Em modo <strong>Banco</strong>, o E2E precisa bater
-                  com o webhook do PSP; em <strong>Manual</strong>, fica em
-                  análise até sua aprovação.
+                  Em modo <strong>Banco</strong>, o E2E precisa bater com o
+                  webhook do PSP; em <strong>Manual</strong>, todo comprovante
+                  fica em análise; em <strong>IA (regras rígidas)</strong>, a
+                  confirmação automática só ocorre dentro dos limites abaixo.
                 </span>
               </div>
             </div>
           )}
+
+          {/* Strict AI Rules Settings (bot_settings) */}
+          <div className="pt-2 border-t border-[#1E1E26] space-y-3">
+            <div className="flex items-center gap-2">
+              <Bot className="w-4 h-4 text-[#FFB000]" />
+              <h3 className="text-sm font-semibold text-white">
+                Limites Rígidos do Modo IA
+              </h3>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <div>
+                <label className="block text-[11px] font-medium text-zinc-300 mb-1.5">
+                  Confiança Mínima (0.5–1.0)
+                </label>
+                <input
+                  type="number"
+                  min="0.5"
+                  max="1"
+                  step="0.01"
+                  value={aiMinConfidence}
+                  onChange={(e) => setAiMinConfidence(e.target.value)}
+                  className="w-full px-3 py-2 rounded-xl bg-[#18181F] border border-[#262630] text-sm font-mono-tabular text-white focus:outline-none focus:border-[#FF7900]"
+                />
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-medium text-zinc-300 mb-1.5">
+                  Valor Máx. Auto (R$)
+                </label>
+                <input
+                  type="number"
+                  min="1"
+                  step="0.01"
+                  value={aiMaxAmount}
+                  onChange={(e) => setAiMaxAmount(e.target.value)}
+                  className="w-full px-3 py-2 rounded-xl bg-[#18181F] border border-[#262630] text-sm font-mono-tabular text-white focus:outline-none focus:border-[#FF7900]"
+                />
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-medium text-zinc-300 mb-1.5">
+                  Máx. / Telefone / Dia
+                </label>
+                <input
+                  type="number"
+                  min="1"
+                  step="1"
+                  value={aiMaxPerPhoneDay}
+                  onChange={(e) => setAiMaxPerPhoneDay(e.target.value)}
+                  className="w-full px-3 py-2 rounded-xl bg-[#18181F] border border-[#262630] text-sm font-mono-tabular text-white focus:outline-none focus:border-[#FF7900]"
+                />
+              </div>
+            </div>
+          </div>
         </section>
 
         {/* Bot WhatsApp & Outbound Webhook */}

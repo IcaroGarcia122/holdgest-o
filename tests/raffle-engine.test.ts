@@ -1,6 +1,22 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { RaffleEngine } from "../api/_lib/raffleEngine.js";
+import type { SupabaseClient } from "@supabase/supabase-js";
+import type { ApiRequest, ApiResponse } from "../api/_lib/http.js";
+import {
+  RaffleEngine,
+  approveReceiptAction,
+  cancelOrderAction,
+  formatBotReceiptResponse,
+  linkReceiptAction,
+  listPendingAdminItems,
+  parseAiSettingsInput,
+  parseConfirmationMode,
+  payOrderManualAction,
+  rejectReceiptAction,
+  revertOrderAction,
+  verifyBotAdminActor,
+} from "../api/_lib/raffleEngine.js";
+import { handleSummaryDaily } from "../api/bot/summary/daily.js";
 
 function makeEngine(confirmationMode: "banco" | "manual" = "banco") {
   const engine = new RaffleEngine();
@@ -355,4 +371,694 @@ test("9. Rejeitar comprovante volta pedido para pendente somente se não houver 
   assert.equal(ord.status, "pendente");
   assert.equal(ord.needsAdmin, false);
 });
+
+test("10. Bot Admin: não-admin recebe 403 (inclusive quando admin_phones está vazio)", () => {
+  const engine = makeEngine("manual");
+  const ord = engine.createOrder({
+    campaignId: "camp-1",
+    phone: "5511999990040",
+    buyerName: "Teste Auth",
+    quotas: [75],
+  }).order!;
+
+  // admin_phones vazio -> 403
+  const emptyListRes = engine.payOrderManual({
+    ref: ord.code,
+    actorPhone: "5543999999999",
+  });
+  assert.equal(emptyListRes.ok, false);
+  if (!emptyListRes.ok) {
+    assert.equal(emptyListRes.status, 403);
+    assert.equal(emptyListRes.error, "not_admin");
+  }
+
+  // Com admin configurado, telefone comum continua recebendo 403
+  engine.setAdminPhones(["5543999999999"]);
+  const nonAdminPending = engine.listPendingForBot("5511999990040");
+  assert.equal(nonAdminPending.ok, false);
+  if (!nonAdminPending.ok) {
+    assert.equal(nonAdminPending.status, 403);
+    assert.equal(nonAdminPending.error, "not_admin");
+  }
+
+  const nonAdminPay = engine.payOrderManual({
+    ref: ord.code,
+    actorPhone: "+55 (11) 99999-0040",
+  });
+  assert.equal(nonAdminPay.ok, false);
+  if (!nonAdminPay.ok) {
+    assert.equal(nonAdminPay.status, 403);
+    assert.equal(nonAdminPay.error, "not_admin");
+  }
+});
+
+test("11. Bot Admin: admin aprova comprovante (credita uma vez) e aprovação repetida é idempotente", () => {
+  const engine = makeEngine("manual");
+  engine.setAdminPhones(["+55 (43) 99999-9999"]);
+
+  const ord = engine.createOrder({
+    campaignId: "camp-1",
+    phone: "5511999990041",
+    buyerName: "Mariana",
+    quotas: [80, 81],
+  }).order!;
+
+  const rcpRes = engine.registerReceipt({
+    phone: "5511999990041",
+    sourceMessageId: "msg-bot-approve-1",
+    e2e: "E2E-BOT-APPROVE-1",
+    imageHash: "hash-bot-approve-1",
+    amount: 200,
+  });
+  assert.equal(rcpRes.result, "em_analise");
+  assert.ok(rcpRes.receiptCode);
+
+  // Admin aprova usando código curto em minúsculas
+  const approve1 = engine.approveReceipt({
+    ref: rcpRes.receiptCode!.toLowerCase(),
+    actorPhone: "5543999999999",
+  });
+  assert.equal(approve1.ok, true);
+  if (approve1.ok) {
+    assert.equal(approve1.result, "confirmado");
+    assert.equal(approve1.order?.status, "pago");
+    assert.equal(approve1.order?.paidAmount, 200);
+    assert.equal(approve1.receipt?.status, "confirmado");
+    assert.equal(approve1.shortfall, 0);
+    assert.equal(approve1.surplus, 0);
+  }
+  assert.equal(engine.auditLog[0]?.actor, "whatsapp:5543999999999");
+  assert.equal(engine.auditLog[0]?.action, "RECEIPT_APPROVED");
+  assert.equal(engine.outboundEvents.length, 1);
+  assert.equal(engine.outboundEvents[0]?.event, "ORDER_PAID");
+
+  // Segunda aprovação do mesmo comprovante é idempotente e não credita de novo
+  const approve2 = engine.approveReceipt({
+    ref: rcpRes.receiptId!,
+    actorPhone: "5543999999999",
+  });
+  assert.equal(approve2.ok, true);
+  if (approve2.ok) {
+    assert.equal(approve2.result, "ja_processado");
+    assert.equal(approve2.order?.paidAmount, 200);
+  }
+  assert.equal(ord.paidAmount, 200);
+  assert.equal(engine.outboundEvents.length, 1);
+});
+
+test("12. Bot Admin: rejeitar comprovante volta pedido a pendente; link, pay manual, cancel e revert por :ref (código curto e id)", () => {
+  const engine = makeEngine("manual");
+  engine.setAdminPhones(["5543999998888"]);
+
+  // Cria comprovante órfão e depois vincula via linkReceipt
+  const orphanRes = engine.registerReceipt({
+    phone: "5511999990042",
+    sourceMessageId: "msg-bot-orphan-1",
+    e2e: "E2E-BOT-ORPHAN-1",
+    imageHash: "hash-bot-orphan-1",
+    amount: 100,
+  });
+  assert.equal(orphanRes.result, "orfao");
+
+  const ord = engine.createOrder({
+    campaignId: "camp-1",
+    phone: "5511999990043",
+    buyerName: "Pedro",
+    quotas: [90, 91],
+  }).order!;
+
+  // Vincula órfão pelo código curto do comprovante e código curto do pedido (case-insensitive)
+  const linked = engine.linkReceipt({
+    receiptRef: orphanRes.receiptCode!.toLowerCase(),
+    orderRef: ord.code.toLowerCase(),
+    actorPhone: "5543999998888",
+  });
+  assert.equal(linked.ok, true);
+  if (linked.ok) {
+    assert.equal(linked.result, "vinculado");
+    assert.equal(linked.order?.status, "em_analise");
+  }
+
+  // Lista pendentes inclui esse comprovante
+  const pending = engine.listPendingForBot("5543999998888");
+  assert.equal(pending.ok, true);
+  if (pending.ok) {
+    assert.equal(pending.items.length, 1);
+    assert.equal(pending.items[0]?.code, orphanRes.receiptCode);
+  }
+
+  // Rejeitar devolve o pedido para pendente
+  const rejected = engine.rejectReceiptByRef({
+    ref: orphanRes.receiptCode!,
+    actorPhone: "5543999998888",
+    reason: "Comprovante divergente",
+  });
+  assert.equal(rejected.ok, true);
+  if (rejected.ok) {
+    assert.equal(rejected.result, "rejeitado");
+    assert.equal(rejected.order?.status, "pendente");
+  }
+
+  // Pay manual pelo código curto (Rxxxx)
+  const paid = engine.payOrderManual({
+    ref: ord.code.toLowerCase(),
+    actorPhone: "5543999998888",
+  });
+  assert.equal(paid.ok, true);
+  if (paid.ok) {
+    assert.equal(paid.result, "confirmado");
+    assert.equal(paid.order?.status, "pago");
+    assert.equal(paid.order?.paidAmount, 200);
+  }
+  assert.equal(engine.quotas.get("camp-1")![89].status, "paga");
+  assert.equal(engine.quotas.get("camp-1")![90].status, "paga");
+
+  // Revert pelo id do pedido volta para pendente e cotas para reservada
+  const reverted = engine.revertOrder({
+    ref: ord.id,
+    actorPhone: "5543999998888",
+  });
+  assert.equal(reverted.ok, true);
+  if (reverted.ok) {
+    assert.equal(reverted.result, "revertido");
+    assert.equal(reverted.order?.status, "pendente");
+    assert.equal(reverted.order?.paidAmount, 0);
+  }
+  assert.equal(engine.quotas.get("camp-1")![89].status, "reservada");
+  assert.equal(engine.quotas.get("camp-1")![90].status, "reservada");
+
+  // Paga parcial e depois cancela -> libera números e devolve refundAmount
+  const partialPay = engine.payOrderManual({
+    ref: ord.code,
+    actorPhone: "5543999998888",
+    amount: 50,
+  });
+  assert.equal(partialPay.ok, true);
+  if (partialPay.ok) {
+    assert.equal(partialPay.result, "parcial");
+    assert.equal(partialPay.shortfall, 150);
+  }
+
+  const cancelled = engine.cancelOrder({
+    ref: ord.id,
+    actorPhone: "5543999998888",
+  });
+  assert.equal(cancelled.ok, true);
+  if (cancelled.ok) {
+    assert.equal(cancelled.result, "cancelado");
+    assert.equal(cancelled.order?.status, "cancelado");
+    assert.equal(cancelled.refundAmount, 50);
+  }
+  assert.equal(engine.quotas.get("camp-1")![89].status, "disponivel");
+  assert.equal(engine.quotas.get("camp-1")![89].orderId, null);
+  assert.equal(engine.quotas.get("camp-1")![90].status, "disponivel");
+});
+
+function createFakeSupabase() {
+  const db: Record<string, Array<Record<string, unknown>>> = {
+    bot_settings: [{ id: 1, admin_phones: ["+55 (43) 99999-9999"] }],
+    campaigns: [{ id: "camp-1", reservation_minutes: 30, status: "ativa" }],
+    orders: [
+      {
+        id: "ord-100",
+        code: "R3F9A",
+        campaign_id: "camp-1",
+        buyer_name: "Ana Paula",
+        buyer_phone: "5511988887777",
+        quotas: [12, 15],
+        total_amount: 20,
+        paid_amount: 0,
+        surplus_amount: 0,
+        needs_admin: true,
+        conflict_reason: null,
+        status: "em_analise",
+        expires_at: new Date(Date.now() + 30 * 60_000).toISOString(),
+        created_at: new Date().toISOString(),
+      },
+    ],
+    quotas: [
+      { campaign_id: "camp-1", number: 12, status: "reservada", order_id: "ord-100" },
+      { campaign_id: "camp-1", number: 15, status: "reservada", order_id: "ord-100" },
+    ],
+    receipts: [
+      {
+        id: "rcp-100",
+        code: "C3F9A",
+        order_id: "ord-100",
+        campaign_id: "camp-1",
+        buyer_phone: "5511988887777",
+        amount: 20,
+        payer_name: "Ana Paula",
+        e2e: "E2E-100",
+        reasons: [],
+        status: "em_analise",
+        created_at: new Date().toISOString(),
+      },
+    ],
+    audit_log: [],
+  };
+
+  class QueryBuilder {
+    private table: string;
+    private filters: Array<(row: Record<string, unknown>) => boolean> = [];
+    private op: "select" | "update" | "insert" = "select";
+    private patch: Record<string, unknown> = {};
+    private headOnly = false;
+
+    constructor(table: string) {
+      this.table = table;
+    }
+
+    select(_cols = "*", opts?: { count?: string; head?: boolean }) {
+      this.op = "select";
+      this.headOnly = Boolean(opts?.head);
+      return this;
+    }
+    update(patch: Record<string, unknown>) {
+      this.op = "update";
+      this.patch = patch;
+      return this;
+    }
+    insert(row: Record<string, unknown>) {
+      db[this.table].push({ ...row });
+      return Promise.resolve({ data: row, error: null });
+    }
+    eq(col: string, val: unknown) {
+      this.filters.push((r) => r[col] === val);
+      return this;
+    }
+    neq(col: string, val: unknown) {
+      this.filters.push((r) => r[col] !== val);
+      return this;
+    }
+    in(col: string, vals: unknown[]) {
+      this.filters.push((r) => vals.includes(r[col]));
+      return this;
+    }
+    gt(col: string, val: number) {
+      this.filters.push((r) => Number(r[col] ?? 0) > val);
+      return this;
+    }
+    lte(col: string, val: string) {
+      this.filters.push((r) => String(r[col] ?? "") <= val);
+      return this;
+    }
+    not(col: string, _op: string, val: unknown) {
+      this.filters.push((r) => r[col] !== val && r[col] !== undefined);
+      return this;
+    }
+    order() {
+      return this;
+    }
+    private execute() {
+      const rows = db[this.table] ?? [];
+      const matched = rows.filter((r) => this.filters.every((f) => f(r)));
+      if (this.op === "update") {
+        for (const row of matched) {
+          Object.assign(row, this.patch);
+        }
+        return { data: matched, count: matched.length, error: null };
+      }
+      if (this.headOnly) {
+        return { data: null, count: matched.length, error: null };
+      }
+      return { data: matched.map((r) => ({ ...r })), count: matched.length, error: null };
+    }
+    maybeSingle() {
+      const res = this.execute();
+      const first = Array.isArray(res.data) ? res.data[0] ?? null : null;
+      return Promise.resolve({ data: first, error: null });
+    }
+    then<TResult1 = unknown, TResult2 = never>(
+      onfulfilled?: ((value: unknown) => TResult1 | PromiseLike<TResult1>) | null,
+      onrejected?: ((reason: unknown) => TResult2 | PromiseLike<TResult2>) | null
+    ) {
+      return Promise.resolve(this.execute()).then(onfulfilled, onrejected);
+    }
+  }
+
+  const client = {
+    from(table: string) {
+      return new QueryBuilder(table);
+    },
+    async rpc(fn: string, params: Record<string, unknown>) {
+      if (fn !== "credit_order") {
+        return { data: null, error: { message: "unknown_rpc" } };
+      }
+      const ord = db.orders.find((o) => o.id === params.p_order_id);
+      if (!ord) return { data: { result: "nao_encontrado" }, error: null };
+      const amount = Number(params.p_amount || 0);
+      const nextPaid = Number((Number(ord.paid_amount || 0) + amount).toFixed(2));
+      ord.paid_amount = nextPaid;
+      if (nextPaid >= Number(ord.total_amount)) {
+        const surplus = Number((nextPaid - Number(ord.total_amount)).toFixed(2));
+        ord.status = "pago";
+        ord.surplus_amount = surplus;
+        for (const q of db.quotas) {
+          if (q.order_id === ord.id) q.status = "paga";
+        }
+        db.audit_log.push({
+          actor: params.p_origin,
+          action: "ORDER_CREDITED_PAID",
+          details: { order_id: ord.id, amount },
+        });
+        return { data: { ok: true, result: "confirmado", surplus }, error: null };
+      }
+      const shortfall = Number((Number(ord.total_amount) - nextPaid).toFixed(2));
+      ord.status = "pendente";
+      return { data: { ok: true, result: "parcial", shortfall }, error: null };
+    },
+  };
+
+  return { client: client as unknown as SupabaseClient, db };
+}
+
+test("13. Funções compartilhadas (raffleEngine -> Supabase): auth, :ref curto/id, idempotência, rejeição, pay, revert, cancel e audit_log", async () => {
+  const { client, db } = createFakeSupabase();
+  const events: string[] = [];
+  const hooks = {
+    dispatchOutboundEvent: async (ev: string) => {
+      events.push(ev);
+    },
+    checkAndNotifyRaffleComplete: async () => false,
+  };
+
+  // Não-admin -> 403
+  const denied = await verifyBotAdminActor(client, "5511000000000");
+  assert.equal(denied.ok, false);
+  if (!denied.ok) assert.equal(denied.status, 403);
+
+  // Admin válido
+  const allowed = await verifyBotAdminActor(client, "5543999999999");
+  assert.equal(allowed.ok, true);
+  if (!allowed.ok) return;
+  assert.equal(allowed.actorLabel, "whatsapp:5543999999999");
+
+  // Pending lista o comprovante
+  const pend = await listPendingAdminItems(client);
+  assert.equal(pend.ok, true);
+  if (pend.ok) assert.equal(pend.items[0]?.code, "C3F9A");
+
+  // Aprovar por código curto em minúsculas
+  const app1 = await approveReceiptAction(
+    client,
+    { ref: "c3f9a", actor: allowed.actorLabel, decidedBy: allowed.actorLabel },
+    hooks
+  );
+  assert.equal(app1.ok, true);
+  if (app1.ok) {
+    assert.equal(app1.result, "confirmado");
+    assert.equal(app1.order?.status, "pago");
+    assert.equal(app1.order?.paidAmount, 20);
+  }
+  assert.deepEqual(events, ["ORDER_PAID"]);
+
+  // Re-aprovar por ID é idempotente (ja_processado)
+  const app2 = await approveReceiptAction(
+    client,
+    { ref: "rcp-100", actor: allowed.actorLabel, decidedBy: allowed.actorLabel },
+    hooks
+  );
+  assert.equal(app2.ok, true);
+  if (app2.ok) assert.equal(app2.result, "ja_processado");
+  assert.equal(db.orders[0].paid_amount, 20);
+
+  // Revert por código curto volta pedido a pendente e comprovante a em_analise
+  const rev = await revertOrderAction(client, {
+    ref: "r3f9a",
+    actor: allowed.actorLabel,
+  });
+  assert.equal(rev.ok, true);
+  if (rev.ok) {
+    assert.equal(rev.result, "revertido");
+    assert.equal(rev.order?.status, "pendente");
+    assert.equal(rev.order?.paidAmount, 0);
+  }
+  assert.equal(db.receipts[0].status, "em_analise");
+
+  // Link + Reject
+  db.orders[0].status = "em_analise";
+  const rej = await rejectReceiptAction(client, {
+    ref: "C3F9A",
+    actor: allowed.actorLabel,
+    decidedBy: allowed.actorLabel,
+    reason: "Ilegível",
+  });
+  assert.equal(rej.ok, true);
+  if (rej.ok) {
+    assert.equal(rej.result, "rejeitado");
+    assert.equal(rej.order?.status, "pendente");
+  }
+
+  // Novo órfão vinculado via código curto
+  db.receipts.push({
+    id: "rcp-101",
+    code: "C9999",
+    order_id: null,
+    campaign_id: null,
+    buyer_phone: "5511988887777",
+    amount: 20,
+    payer_name: "Ana",
+    e2e: "E2E-101",
+    reasons: [],
+    status: "orfao",
+    created_at: new Date().toISOString(),
+  });
+  const lnk = await linkReceiptAction(client, {
+    receiptRef: "c9999",
+    orderRef: "r3f9a",
+    actor: allowed.actorLabel,
+  });
+  assert.equal(lnk.ok, true);
+  if (lnk.ok) {
+    assert.equal(lnk.result, "vinculado");
+    assert.equal(lnk.order?.status, "em_analise");
+  }
+
+  // Pay manual parcial + cancel retorna refundAmount e libera números
+  const payPart = await payOrderManualAction(
+    client,
+    { ref: "R3F9A", actor: allowed.actorLabel, decidedBy: allowed.actorLabel, amount: 10 },
+    hooks
+  );
+  assert.equal(payPart.ok, true);
+  if (payPart.ok) {
+    assert.equal(payPart.result, "parcial");
+    assert.equal(payPart.shortfall, 10);
+  }
+
+  const can = await cancelOrderAction(
+    client,
+    { ref: "ord-100", actor: allowed.actorLabel, decidedBy: allowed.actorLabel },
+    hooks
+  );
+  assert.equal(can.ok, true);
+  if (can.ok) {
+    assert.equal(can.result, "cancelado");
+    assert.equal(can.refundAmount, 10);
+  }
+  assert.ok(db.quotas.every((q) => q.status === "disponivel" && q.order_id === null));
+  assert.ok(
+    db.audit_log.some(
+      (a) => a.actor === "whatsapp:5543999999999" && a.action === "ORDER_CANCELLED"
+    )
+  );
+});
+
+test("14. Modo 'ia' é aceito/recusado corretamente na validação e limites de IA são validados", () => {
+  assert.equal(parseConfirmationMode("ia"), "ia");
+  assert.equal(parseConfirmationMode(" IA "), "ia");
+  assert.equal(parseConfirmationMode("banco"), "banco");
+  assert.equal(parseConfirmationMode("manual"), "manual");
+  assert.equal(parseConfirmationMode("pix"), null);
+  assert.equal(parseConfirmationMode(""), null);
+  assert.equal(parseConfirmationMode(null), null);
+
+  // Padrões quando omitidos
+  const defaults = parseAiSettingsInput({});
+  assert.equal(defaults.ok, true);
+  if (defaults.ok) {
+    assert.equal(defaults.value.aiMinConfidence, 0.9);
+    assert.equal(defaults.value.aiMaxAmount, 100);
+    assert.equal(defaults.value.aiMaxPerPhoneDay, 5);
+  }
+
+  // Valores válidos nos limites
+  const valid = parseAiSettingsInput({
+    aiMinConfidence: 0.5,
+    aiMaxAmount: 250.5,
+    aiMaxPerPhoneDay: 3,
+  });
+  assert.equal(valid.ok, true);
+
+  // Fora da faixa 0.5..1.0 -> erro
+  const lowConf = parseAiSettingsInput({ aiMinConfidence: 0.49 });
+  assert.equal(lowConf.ok, false);
+  const highConf = parseAiSettingsInput({ aiMinConfidence: 1.05 });
+  assert.equal(highConf.ok, false);
+
+  // Valor máximo <= 0 ou limite diário inválido -> erro
+  const badAmt = parseAiSettingsInput({ aiMaxAmount: 0 });
+  assert.equal(badAmt.ok, false);
+  const badDay = parseAiSettingsInput({ aiMaxPerPhoneDay: 1.5 });
+  assert.equal(badDay.ok, false);
+});
+
+function createMockRes() {
+  const headers: Record<string, string> = {};
+  let statusCode = 200;
+  let body: unknown = null;
+  const res = {
+    setHeader(k: string, v: string) {
+      headers[k] = v;
+    },
+    status(code: number) {
+      statusCode = code;
+      return res;
+    },
+    json(data: unknown) {
+      body = data;
+    },
+    end(raw?: string) {
+      body = raw ? JSON.parse(raw) : null;
+    },
+  } as unknown as ApiResponse;
+
+  return {
+    res,
+    getStatus: () => statusCode,
+    getHeaders: () => headers,
+    getBody: () => body as Record<string, unknown>,
+  };
+}
+
+test("15. POST /api/bot/summary/daily exige BOT_API_TOKEN, envia Cache-Control: no-store e respeita ?peek=1", async () => {
+  const prevToken = process.env.BOT_API_TOKEN;
+  process.env.BOT_API_TOKEN = "test-bot-secret-token";
+
+  const rpcCalls: Array<{ fn: string; params: Record<string, unknown> }> = [];
+  const fakeSupabase = {
+    async rpc(fn: string, params: Record<string, unknown>) {
+      rpcCalls.push({ fn, params });
+      return {
+        data: {
+          count: 1,
+          total: 50,
+          items: [
+            {
+              receiptCode: "C7A1B",
+              orderCode: "R9K2M",
+              buyerName: "João",
+              phone: "5511999990000",
+              quotas: [10],
+              amount: 50,
+              payerName: "JOAO SILVA",
+              e2e: "E2E-AI-01",
+              paidAt: "2026-11-24T12:00:00Z",
+              confirmedAt: "2026-11-24T12:01:00Z",
+            },
+          ],
+        },
+        error: null,
+      };
+    },
+  } as unknown as SupabaseClient;
+
+  try {
+    // Sem token -> 401 + Cache-Control: no-store
+    const noAuthReq = {
+      method: "POST",
+      url: "/api/bot/summary/daily",
+      headers: {},
+      ip: "127.0.0.1",
+    } as unknown as ApiRequest;
+    const noAuthRes = createMockRes();
+    await handleSummaryDaily(noAuthReq, noAuthRes.res, fakeSupabase);
+    assert.equal(noAuthRes.getStatus(), 401);
+    assert.equal(noAuthRes.getHeaders()["Cache-Control"], "no-store");
+    assert.equal(rpcCalls.length, 0);
+
+    // Token errado -> 401
+    const badAuthReq = {
+      method: "POST",
+      url: "/api/bot/summary/daily",
+      headers: { authorization: "Bearer wrong-token" },
+      ip: "127.0.0.1",
+    } as unknown as ApiRequest;
+    const badAuthRes = createMockRes();
+    await handleSummaryDaily(badAuthReq, badAuthRes.res, fakeSupabase);
+    assert.equal(badAuthRes.getStatus(), 401);
+    assert.equal(rpcCalls.length, 0);
+
+    // Token válido com ?peek=1 -> p_mark: false
+    const peekReq = {
+      method: "POST",
+      url: "/api/bot/summary/daily?peek=1",
+      headers: { authorization: "Bearer test-bot-secret-token" },
+      ip: "127.0.0.1",
+    } as unknown as ApiRequest;
+    const peekRes = createMockRes();
+    await handleSummaryDaily(peekReq, peekRes.res, fakeSupabase);
+    assert.equal(peekRes.getStatus(), 200);
+    assert.equal(peekRes.getHeaders()["Cache-Control"], "no-store");
+    assert.deepEqual(rpcCalls[0], {
+      fn: "ai_daily_summary",
+      params: { p_mark: false },
+    });
+    assert.equal(peekRes.getBody().count, 1);
+
+    // Token válido sem ?peek -> p_mark: true
+    const markReq = {
+      method: "POST",
+      url: "/api/bot/summary/daily",
+      headers: { authorization: "Bearer test-bot-secret-token" },
+      ip: "127.0.0.1",
+    } as unknown as ApiRequest;
+    const markRes = createMockRes();
+    await handleSummaryDaily(markReq, markRes.res, fakeSupabase);
+    assert.equal(markRes.getStatus(), 200);
+    assert.deepEqual(rpcCalls[1], {
+      fn: "ai_daily_summary",
+      params: { p_mark: true },
+    });
+  } finally {
+    if (prevToken === undefined) {
+      delete process.env.BOT_API_TOKEN;
+    } else {
+      process.env.BOT_API_TOKEN = prevToken;
+    }
+  }
+});
+
+test("16. Resposta de /api/bot/receipts inclui autoConfirmed e receiptCode", () => {
+  const autoRes = formatBotReceiptResponse(
+    {
+      result: "confirmado",
+      receiptId: "rcp-ai-1",
+      autoConfirmed: true,
+      order: { id: "ord-1", code: "R1A2B", status: "pago" },
+      shortfall: 0,
+      surplus: 0,
+      reason: null,
+    },
+    "C1A2B"
+  );
+  assert.equal(autoRes.result, "confirmado");
+  assert.equal(autoRes.autoConfirmed, true);
+  assert.equal(autoRes.receiptCode, "C1A2B");
+
+  const manualRes = formatBotReceiptResponse(
+    {
+      result: "em_analise",
+      receiptId: "rcp-man-1",
+      order: { id: "ord-2", status: "em_analise" },
+    },
+    "C9Z8Y"
+  );
+  assert.equal(manualRes.autoConfirmed, false);
+  assert.equal(manualRes.receiptCode, "C9Z8Y");
+});
+
+
+
 

@@ -48,9 +48,9 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
   onAttachReceipt,
   onCancelOrder,
 }) => {
-  const [statusFilter, setStatusFilter] = useState<"todos" | OrderStatus>(
-    "todos"
-  );
+  const [statusFilter, setStatusFilter] = useState<
+    "todos" | OrderStatus | "ia_auto"
+  >("todos");
   const [campaignFilter, setCampaignFilter] = useState<string>("ativa");
   const [search, setSearch] = useState("");
   const [viewingReceiptOrder, setViewingReceiptOrder] =
@@ -72,7 +72,11 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
       )
       .filter((o) => {
         const camp = campaignMap.get(o.campaignId);
-        if (statusFilter !== "todos" && o.status !== statusFilter) return false;
+        if (statusFilter === "ia_auto") {
+          if (!o.receipt?.autoConfirmed) return false;
+        } else if (statusFilter !== "todos" && o.status !== statusFilter) {
+          return false;
+        }
         if (campaignFilter === "ativa") {
           if (!camp || camp.status !== "ativa") return false;
         } else if (
@@ -160,6 +164,7 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
             [
               { id: "todos", label: "Todos" },
               { id: "pago", label: "Confirmados" },
+              { id: "ia_auto", label: "Confirmado pela IA" },
               { id: "em_analise", label: "Em Análise" },
               { id: "pendente", label: "Aguardando Pix" },
               { id: "expirado", label: "Expirados" },
@@ -277,6 +282,13 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
                                 <span>Anexar</span>
                               </button>
                             )
+                          )}
+
+                          {order.receipt?.autoConfirmed && (
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-purple-500/15 border border-purple-500/40 text-[10px] font-semibold text-purple-300">
+                              <Bot className="w-3 h-3" />
+                              <span>Confirmado pela IA</span>
+                            </span>
                           )}
 
                           {order.conflictReason === "conflito_reembolso" && (

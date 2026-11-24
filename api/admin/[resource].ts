@@ -18,6 +18,16 @@ import {
   checkAndNotifyRaffleComplete,
   dispatchOutboundEvent,
 } from "../_lib/webhook.js";
+import {
+  approveReceiptAction,
+  cancelOrderAction,
+  linkReceiptAction,
+  parseAiSettingsInput,
+  parseConfirmationMode,
+  payOrderManualAction,
+  rejectReceiptAction,
+  revertOrderAction,
+} from "../_lib/raffleEngine.js";
 
 function mapCampaignRow(row: Record<string, unknown>) {
   return {
@@ -99,6 +109,7 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
       const signedUrl = r.image_path ? signedUrlMap.get(String(r.image_path)) ?? null : null;
       return {
         id: String(r.id),
+        code: r.code ? String(r.code) : undefined,
         orderId: r.order_id ? String(r.order_id) : null,
         campaignId: r.campaign_id ? String(r.campaign_id) : null,
         buyerPhone: String(r.buyer_phone),
@@ -116,6 +127,8 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
         signedUrl,
         fileName: r.file_name ? String(r.file_name) : null,
         verifiedBy: String(r.verified_by || "ai_bot"),
+        autoConfirmed: Boolean(r.auto_confirmed),
+        summarySentAt: r.summary_sent_at ? String(r.summary_sent_at) : null,
         summary: r.summary ? String(r.summary) : null,
         decidedBy: r.decided_by ? String(r.decided_by) : null,
         decidedAt: r.decided_at ? String(r.decided_at) : null,
@@ -158,6 +171,7 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
         receipt: r
           ? {
               id: r.id,
+              code: r.code,
               imageUrl: r.signedUrl || undefined,
               imagePath: r.imagePath || undefined,
               fileName: r.fileName || undefined,
@@ -170,6 +184,7 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
               reasons: r.reasons,
               confidence: r.confidence ?? undefined,
               verifiedBy: r.verifiedBy as "ai_bot" | "manual",
+              autoConfirmed: r.autoConfirmed,
               summary: r.summary || undefined,
               uploadedAt: r.createdAt,
             }
@@ -236,7 +251,9 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
         adminPhones: Array.isArray(botSettings?.admin_phones)
           ? botSettings.admin_phones
           : [],
-        autoConfirmWithAi: Boolean(botSettings?.auto_confirm_with_ai),
+        aiMinConfidence: Number(botSettings?.ai_min_confidence ?? 0.9),
+        aiMaxAmount: Number(botSettings?.ai_max_amount ?? 100),
+        aiMaxPerPhoneDay: Number(botSettings?.ai_max_per_phone_day ?? 5),
       },
     });
   }
@@ -263,6 +280,17 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
       const ticketPrice = Number(body.ticketPrice);
       if (!title || !Number.isFinite(ticketPrice) || ticketPrice <= 0) {
         return sendJson(res, 422, { error: "invalid_campaign_payload" });
+      }
+
+      const confirmationMode =
+        body.confirmationMode === undefined || body.confirmationMode === ""
+          ? "manual"
+          : parseConfirmationMode(body.confirmationMode);
+      if (!confirmationMode) {
+        return sendJson(res, 422, {
+          error: "invalid_confirmation_mode",
+          message: "Modo de confirmação inválido. Use 'banco', 'manual' ou 'ia'.",
+        });
       }
 
       const { count } = await supabase
@@ -297,7 +325,7 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
           pix_key: cleanString(body.pixKey, 160),
           pix_beneficiary: cleanString(body.pixBeneficiary, 160),
           reservation_minutes: Math.max(5, Number(body.reservationMinutes) || 30),
-          confirmation_mode: body.confirmationMode === "banco" ? "banco" : "manual",
+          confirmation_mode: confirmationMode,
         })
         .select("*")
         .single();
@@ -334,8 +362,16 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
         patch.pix_beneficiary = cleanString(body.pixBeneficiary, 160);
       if (body.reservationMinutes !== undefined)
         patch.reservation_minutes = Math.max(5, Number(body.reservationMinutes) || 30);
-      if (body.confirmationMode !== undefined)
-        patch.confirmation_mode = body.confirmationMode === "banco" ? "banco" : "manual";
+      if (body.confirmationMode !== undefined) {
+        const parsedMode = parseConfirmationMode(body.confirmationMode);
+        if (!parsedMode) {
+          return sendJson(res, 422, {
+            error: "invalid_confirmation_mode",
+            message: "Modo de confirmação inválido. Use 'banco', 'manual' ou 'ia'.",
+          });
+        }
+        patch.confirmation_mode = parsedMode;
+      }
 
       const { error } = await supabase.from("campaigns").update(patch).eq("id", id);
       if (error) return sendJson(res, 500, { error: "db_error", message: error.message });
@@ -488,135 +524,67 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
 
     if (action === "confirm_manual") {
       const orderId = cleanString(body.orderId, 80);
-      const { data: ord } = await supabase
-        .from("orders")
-        .select("*")
-        .eq("id", orderId)
-        .maybeSingle();
-
-      if (!ord) return sendJson(res, 404, { error: "order_not_found" });
-
-      const remaining = Math.max(
-        0.01,
-        Number(ord.total_amount) - Number(ord.paid_amount || 0)
-      );
-      const amount =
-        body.amount !== undefined && Number(body.amount) > 0
-          ? Number(body.amount)
-          : remaining;
-
-      const { data: creditRes, error } = await supabase.rpc("credit_order", {
-        p_order_id: orderId,
-        p_amount: amount,
-        p_origin: `admin:${admin.email}`,
+      if (!orderId) return sendJson(res, 422, { error: "missing_order_id" });
+      const resAction = await payOrderManualAction(supabase, {
+        ref: orderId,
+        actor: `admin:${admin.email}`,
+        decidedBy: admin.email,
+        amount: body.amount,
       });
-
-      if (error) return sendJson(res, 500, { error: "rpc_error", message: error.message });
-
-      const payload = creditRes as Record<string, unknown>;
-      if (payload.result === "confirmado") {
-        await supabase
-          .from("receipts")
-          .update({
-            status: "confirmado",
-            decided_by: admin.email,
-            decided_at: new Date().toISOString(),
-          })
-          .eq("order_id", orderId)
-          .in("status", ["em_analise", "revisao", "reenvio"]);
-
-        await dispatchOutboundEvent("ORDER_PAID", {
-          orderId,
-          orderCode: ord.code,
-          campaignId: ord.campaign_id,
-          buyerName: ord.buyer_name,
-          quotas: ord.quotas,
-          totalAmount: Number(ord.total_amount),
+      if (!resAction.ok) {
+        return sendJson(res, resAction.status, {
+          error: resAction.error,
+          message: resAction.message,
         });
-        await checkAndNotifyRaffleComplete(ord.campaign_id);
       }
-
-      return sendJson(res, 200, { ok: true, creditResult: payload });
+      return sendJson(res, 200, {
+        ok: true,
+        result: resAction.result,
+        order: resAction.order,
+        creditResult: resAction.creditResult,
+      });
     }
 
     if (action === "revert") {
       const orderId = cleanString(body.orderId, 80);
-      const { data: ord } = await supabase
-        .from("orders")
-        .select("*")
-        .eq("id", orderId)
-        .maybeSingle();
-      if (!ord) return sendJson(res, 404, { error: "order_not_found" });
-
-      await supabase
-        .from("orders")
-        .update({
-          status: "pendente",
-          paid_amount: 0,
-          paid_at: null,
-          surplus_amount: 0,
-          needs_admin: false,
-          conflict_reason: null,
-          expires_at: new Date(Date.now() + 30 * 60_000).toISOString(),
-        })
-        .eq("id", orderId);
-
-      await supabase
-        .from("quotas")
-        .update({ status: "reservada", order_id: orderId, updated_at: new Date().toISOString() })
-        .eq("campaign_id", ord.campaign_id)
-        .eq("order_id", orderId);
-
-      await supabase
-        .from("receipts")
-        .update({ status: "em_analise", decided_by: null, decided_at: null })
-        .eq("order_id", orderId)
-        .eq("status", "confirmado");
-
-      await supabase.from("audit_log").insert({
+      if (!orderId) return sendJson(res, 422, { error: "missing_order_id" });
+      const resAction = await revertOrderAction(supabase, {
+        ref: orderId,
         actor: `admin:${admin.email}`,
-        action: "ORDER_PAYMENT_REVERTED",
-        details: { orderId, code: ord.code },
       });
-
-      return sendJson(res, 200, { ok: true });
+      if (!resAction.ok) {
+        return sendJson(res, resAction.status, {
+          error: resAction.error,
+          message: resAction.message,
+        });
+      }
+      return sendJson(res, 200, {
+        ok: true,
+        result: resAction.result,
+        order: resAction.order,
+      });
     }
 
     if (action === "cancel") {
       const orderId = cleanString(body.orderId, 80);
-      const { data: ord } = await supabase
-        .from("orders")
-        .select("*")
-        .eq("id", orderId)
-        .maybeSingle();
-      if (!ord) return sendJson(res, 404, { error: "order_not_found" });
-
-      await supabase
-        .from("orders")
-        .update({ status: "cancelado", needs_admin: false })
-        .eq("id", orderId);
-
-      await supabase
-        .from("quotas")
-        .update({ status: "disponivel", order_id: null, updated_at: new Date().toISOString() })
-        .eq("campaign_id", ord.campaign_id)
-        .eq("order_id", orderId);
-
-      await supabase.from("audit_log").insert({
+      if (!orderId) return sendJson(res, 422, { error: "missing_order_id" });
+      const resAction = await cancelOrderAction(supabase, {
+        ref: orderId,
         actor: `admin:${admin.email}`,
-        action: "ORDER_CANCELLED",
-        details: { orderId, code: ord.code },
+        decidedBy: admin.email,
       });
-
-      await dispatchOutboundEvent("ORDER_CANCELLED", {
-        orderId,
-        orderCode: ord.code,
-        campaignId: ord.campaign_id,
-        buyerName: ord.buyer_name,
-        quotas: ord.quotas,
+      if (!resAction.ok) {
+        return sendJson(res, resAction.status, {
+          error: resAction.error,
+          message: resAction.message,
+        });
+      }
+      return sendJson(res, 200, {
+        ok: true,
+        result: resAction.result,
+        order: resAction.order,
+        refundAmount: resAction.refundAmount,
       });
-
-      return sendJson(res, 200, { ok: true });
     }
 
     if (action === "attach_receipt") {
@@ -690,185 +658,69 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
     const receiptId = cleanString(body.receiptId, 80);
     if (!receiptId) return sendJson(res, 422, { error: "missing_receipt_id" });
 
-    const { data: rcp } = await supabase
-      .from("receipts")
-      .select("*")
-      .eq("id", receiptId)
-      .maybeSingle();
-
-    if (!rcp) return sendJson(res, 404, { error: "receipt_not_found" });
-
     if (action === "approve") {
-      if (!rcp.order_id) {
-        return sendJson(res, 422, {
-          error: "orphan_receipt",
-          message: "Vincule este comprovante a um pedido antes de aprovar.",
-        });
-      }
-
-      const { data: ord } = await supabase
-        .from("orders")
-        .select("*")
-        .eq("id", rcp.order_id)
-        .maybeSingle();
-      if (!ord) return sendJson(res, 404, { error: "order_not_found" });
-
-      const creditAmount =
-        body.amount !== undefined && Number(body.amount) > 0
-          ? Number(body.amount)
-          : rcp.amount && Number(rcp.amount) > 0
-          ? Number(rcp.amount)
-          : Math.max(0.01, Number(ord.total_amount) - Number(ord.paid_amount || 0));
-
-      const { data: creditRes, error } = await supabase.rpc("credit_order", {
-        p_order_id: ord.id,
-        p_amount: creditAmount,
-        p_origin: `admin:${admin.email}`,
-      });
-
-      if (error) return sendJson(res, 500, { error: "rpc_error", message: error.message });
-
-      await supabase
-        .from("receipts")
-        .update({
-          status: "confirmado",
-          decided_by: admin.email,
-          decided_at: new Date().toISOString(),
-          summary: "Aprovado manualmente pelo administrador.",
-        })
-        .eq("id", receiptId);
-
-      await supabase.from("audit_log").insert({
+      const resAction = await approveReceiptAction(supabase, {
+        ref: receiptId,
         actor: `admin:${admin.email}`,
-        action: "RECEIPT_APPROVED",
-        details: { receiptId, orderId: ord.id, amount: creditAmount },
+        decidedBy: admin.email,
+        amount: body.amount,
       });
-
-      const payload = creditRes as Record<string, unknown>;
-      if (payload.result === "confirmado") {
-        await dispatchOutboundEvent("ORDER_PAID", {
-          orderId: ord.id,
-          orderCode: ord.code,
-          campaignId: ord.campaign_id,
-          buyerName: ord.buyer_name,
-          quotas: ord.quotas,
-          totalAmount: Number(ord.total_amount),
+      if (!resAction.ok) {
+        return sendJson(res, resAction.status, {
+          error: resAction.error,
+          message: resAction.message,
         });
-        await checkAndNotifyRaffleComplete(ord.campaign_id);
       }
-
-      return sendJson(res, 200, { ok: true, creditResult: payload });
+      return sendJson(res, 200, {
+        ok: true,
+        result: resAction.result,
+        receipt: resAction.receipt,
+        order: resAction.order,
+        creditResult: resAction.creditResult,
+      });
     }
 
     if (action === "reject") {
-      await supabase
-        .from("receipts")
-        .update({
-          status: "rejeitado",
-          decided_by: admin.email,
-          decided_at: new Date().toISOString(),
-          summary: cleanString(body.reason, 200) || "Rejeitado pelo administrador.",
-        })
-        .eq("id", receiptId);
-
-      let nextOrderStatus: string | undefined;
-
-      if (rcp.order_id) {
-        const [{ count: remainingInAnalysis }, { data: ord }] = await Promise.all([
-          supabase
-            .from("receipts")
-            .select("*", { count: "exact", head: true })
-            .eq("order_id", rcp.order_id)
-            .neq("id", receiptId)
-            .in("status", ["em_analise", "revisao", "reenvio"]),
-          supabase
-            .from("orders")
-            .select("id, status, paid_amount, conflict_reason, expires_at")
-            .eq("id", rcp.order_id)
-            .maybeSingle(),
-        ]);
-
-        if (ord && (remainingInAnalysis ?? 0) === 0) {
-          const hasConflict =
-            ord.conflict_reason === "conflito_reembolso" ||
-            ord.conflict_reason === "excedente";
-
-          if (ord.status === "em_analise") {
-            const currentExp = ord.expires_at
-              ? new Date(String(ord.expires_at)).getTime()
-              : 0;
-            const minFutureExp = Date.now() + 15 * 60_000;
-            const nextExpiresAt =
-              currentExp > Date.now()
-                ? String(ord.expires_at)
-                : new Date(minFutureExp).toISOString();
-
-            await supabase
-              .from("orders")
-              .update({
-                status: "pendente",
-                needs_admin: hasConflict,
-                expires_at: nextExpiresAt,
-              })
-              .eq("id", ord.id);
-            nextOrderStatus = "pendente";
-          } else if (ord.status === "pendente" && !hasConflict) {
-            await supabase
-              .from("orders")
-              .update({ needs_admin: false })
-              .eq("id", ord.id);
-            nextOrderStatus = "pendente";
-          } else {
-            nextOrderStatus = String(ord.status);
-          }
-        } else if (ord) {
-          nextOrderStatus = String(ord.status);
-        }
-      }
-
-      await supabase.from("audit_log").insert({
+      const resAction = await rejectReceiptAction(supabase, {
+        ref: receiptId,
         actor: `admin:${admin.email}`,
-        action: "RECEIPT_REJECTED",
-        details: { receiptId, orderId: rcp.order_id, nextOrderStatus },
+        decidedBy: admin.email,
+        reason: body.reason,
       });
-
-      return sendJson(res, 200, { ok: true, orderStatus: nextOrderStatus });
+      if (!resAction.ok) {
+        return sendJson(res, resAction.status, {
+          error: resAction.error,
+          message: resAction.message,
+        });
+      }
+      return sendJson(res, 200, {
+        ok: true,
+        result: resAction.result,
+        orderStatus: resAction.nextOrderStatus,
+      });
     }
 
     if (action === "link") {
-      const orderId = cleanString(body.orderId, 80);
-      if (!orderId) return sendJson(res, 422, { error: "missing_order_id" });
-      const { data: ord } = await supabase
-        .from("orders")
-        .select("id, campaign_id, status")
-        .eq("id", orderId)
-        .maybeSingle();
-      if (!ord) return sendJson(res, 404, { error: "order_not_found" });
-
-      await supabase
-        .from("receipts")
-        .update({
-          order_id: ord.id,
-          campaign_id: ord.campaign_id,
-          status: "em_analise",
-          summary: "Vinculado manualmente a um pedido pelo administrador.",
-        })
-        .eq("id", receiptId);
-
-      if (ord.status === "pendente") {
-        await supabase
-          .from("orders")
-          .update({ status: "em_analise", needs_admin: true })
-          .eq("id", ord.id);
-      }
-
-      await supabase.from("audit_log").insert({
+      const orderRef =
+        cleanString(body.orderId, 80) || cleanString(body.orderCode, 80);
+      if (!orderRef) return sendJson(res, 422, { error: "missing_order_id" });
+      const resAction = await linkReceiptAction(supabase, {
+        receiptRef: receiptId,
+        orderRef,
         actor: `admin:${admin.email}`,
-        action: "RECEIPT_LINKED",
-        details: { receiptId, orderId: ord.id },
       });
-
-      return sendJson(res, 200, { ok: true });
+      if (!resAction.ok) {
+        return sendJson(res, resAction.status, {
+          error: resAction.error,
+          message: resAction.message,
+        });
+      }
+      return sendJson(res, 200, {
+        ok: true,
+        result: resAction.result,
+        receipt: resAction.receipt,
+        order: resAction.order,
+      });
     }
 
     return sendJson(res, 400, { error: "unknown_receipt_action" });
@@ -1006,6 +858,26 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
       });
     }
 
+    const parsedAi = parseAiSettingsInput(body);
+    if (!parsedAi.ok) {
+      return sendJson(res, 422, {
+        error: parsedAi.error,
+        message: parsedAi.message,
+      });
+    }
+
+    let nextConfirmationMode: string | undefined;
+    if (body.activeCampaignId && body.confirmationMode !== undefined) {
+      const parsedMode = parseConfirmationMode(body.confirmationMode);
+      if (!parsedMode) {
+        return sendJson(res, 422, {
+          error: "invalid_confirmation_mode",
+          message: "Modo de confirmação inválido. Use 'banco', 'manual' ou 'ia'.",
+        });
+      }
+      nextConfirmationMode = parsedMode;
+    }
+
     const adminPhones = Array.isArray(body.adminPhones)
       ? body.adminPhones.map((p) => cleanString(p, 30)).filter(Boolean)
       : typeof body.adminPhones === "string"
@@ -1015,7 +887,7 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
           .filter(Boolean)
       : [];
 
-    await supabase
+    const { error: settingsErr } = await supabase
       .from("bot_settings")
       .upsert({
         id: 1,
@@ -1023,9 +895,15 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
         group_jid: cleanString(body.groupJid, 140),
         outbound_webhook_url: webhookUrl,
         admin_phones: adminPhones,
-        auto_confirm_with_ai: Boolean(body.autoConfirmWithAi),
+        ai_min_confidence: parsedAi.value.aiMinConfidence,
+        ai_max_amount: parsedAi.value.aiMaxAmount,
+        ai_max_per_phone_day: parsedAi.value.aiMaxPerPhoneDay,
         updated_at: new Date().toISOString(),
       });
+
+    if (settingsErr) {
+      return sendJson(res, 500, { error: "db_error", message: settingsErr.message });
+    }
 
     if (body.activeCampaignId) {
       const campPatch: Record<string, unknown> = {};
@@ -1034,13 +912,18 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
         campPatch.pix_beneficiary = cleanString(body.pixBeneficiary, 160);
       if (body.reservationMinutes !== undefined)
         campPatch.reservation_minutes = Math.max(5, Number(body.reservationMinutes) || 30);
-      if (body.confirmationMode !== undefined)
-        campPatch.confirmation_mode = body.confirmationMode === "banco" ? "banco" : "manual";
+      if (nextConfirmationMode !== undefined)
+        campPatch.confirmation_mode = nextConfirmationMode;
 
-      await supabase
-        .from("campaigns")
-        .update(campPatch)
-        .eq("id", cleanString(body.activeCampaignId, 80));
+      if (Object.keys(campPatch).length > 0) {
+        const { error: campErr } = await supabase
+          .from("campaigns")
+          .update(campPatch)
+          .eq("id", cleanString(body.activeCampaignId, 80));
+        if (campErr) {
+          return sendJson(res, 500, { error: "db_error", message: campErr.message });
+        }
+      }
     }
 
     await supabase.from("audit_log").insert({
@@ -1094,7 +977,7 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
         pix_key: cleanString(c.pixKey, 160),
         pix_beneficiary: cleanString(c.pixBeneficiary, 160),
         reservation_minutes: Number(c.reservationMinutes) || 30,
-        confirmation_mode: c.confirmationMode === "banco" ? "banco" : "manual",
+        confirmation_mode: parseConfirmationMode(c.confirmationMode) ?? "manual",
         created_at: String(c.createdAt || new Date().toISOString()),
         completed_notified_at: c.completedNotifiedAt ? String(c.completedNotifiedAt) : null,
       });

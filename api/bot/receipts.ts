@@ -11,7 +11,11 @@ import {
   isSupabaseConfigured,
   uploadReceiptImageToStorage,
 } from "../_lib/supabase.js";
-import { checkAndNotifyRaffleComplete } from "../_lib/webhook.js";
+import {
+  checkAndNotifyRaffleComplete,
+  dispatchOutboundEvent,
+} from "../_lib/webhook.js";
+import { formatBotReceiptResponse } from "../_lib/raffleEngine.js";
 
 const ALLOWED_PRE_STATUS = new Set(["ok", "revisar", "rejeitar", "reenvio"]);
 
@@ -121,21 +125,34 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
     if (typeof orderObj.id === "string") {
       const { data: ord } = await supabase
         .from("orders")
-        .select("campaign_id")
+        .select("id, code, campaign_id, buyer_name, quotas, total_amount")
         .eq("id", orderObj.id)
         .maybeSingle();
       if (ord?.campaign_id) {
+        await dispatchOutboundEvent("ORDER_PAID", {
+          orderId: ord.id,
+          orderCode: ord.code,
+          campaignId: ord.campaign_id,
+          buyerName: ord.buyer_name,
+          quotas: ord.quotas,
+          totalAmount: Number(ord.total_amount),
+          autoConfirmed: Boolean(payload.autoConfirmed),
+        });
         await checkAndNotifyRaffleComplete(ord.campaign_id);
       }
     }
   }
 
-  return sendJson(res, 200, {
-    result: payload.result,
-    receiptId: payload.receiptId,
-    order: payload.order,
-    shortfall: payload.shortfall,
-    surplus: payload.surplus,
-    reason: payload.reason,
-  });
+  let receiptCode: string | null =
+    typeof payload.receiptCode === "string" ? payload.receiptCode : null;
+  if (!receiptCode && typeof payload.receiptId === "string" && payload.receiptId) {
+    const { data: rcpRow } = await supabase
+      .from("receipts")
+      .select("code")
+      .eq("id", payload.receiptId)
+      .maybeSingle();
+    receiptCode = rcpRow?.code ? String(rcpRow.code) : null;
+  }
+
+  return sendJson(res, 200, formatBotReceiptResponse(payload, receiptCode));
 }

@@ -498,6 +498,8 @@ export const INITIAL_SEED_STATE: StoreState = {
   botSettings: {
     groupName: "Hold Prêmios — Grupo VIP Oficial",
     outboundWebhookUrl: "",
-    autoConfirmWithAi: true,
+    aiMinConfidence: 0.9,
+    aiMaxAmount: 100,
+    aiMaxPerPhoneDay: 5,
   },
 };

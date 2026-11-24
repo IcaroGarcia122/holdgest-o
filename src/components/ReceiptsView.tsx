@@ -1,6 +1,7 @@
 import React, { useMemo, useState } from "react";
 import {
   AlertTriangle,
+  Bot,
   CheckCircle2,
   Eye,
   FileCheck2,
@@ -77,7 +78,7 @@ export const ReceiptsView: React.FC<ReceiptsViewProps> = ({
   onLinkReceiptToOrder,
 }) => {
   const [filter, setFilter] = useState<
-    "pendentes" | "orfao" | "confirmado" | "rejeitado" | "todos"
+    "pendentes" | "orfao" | "confirmado" | "ia_auto" | "rejeitado" | "todos"
   >("pendentes");
   const [search, setSearch] = useState("");
   const [previewReceipt, setPreviewReceipt] = useState<ReceiptRecord | null>(
@@ -110,12 +111,18 @@ export const ReceiptsView: React.FC<ReceiptsViewProps> = ({
         ) {
           return false;
         }
+      } else if (filter === "ia_auto") {
+        if (!r.autoConfirmed) {
+          return false;
+        }
       } else if (filter !== "todos" && r.status !== filter) {
         return false;
       }
 
       if (!q) return true;
       return (
+        (r.code || "").toLowerCase().includes(q) ||
+        r.id.toLowerCase().includes(q) ||
         (r.payerName || "").toLowerCase().includes(q) ||
         (r.e2e || "").toLowerCase().includes(q) ||
         r.buyerPhone.toLowerCase().includes(q) ||
@@ -216,6 +223,7 @@ export const ReceiptsView: React.FC<ReceiptsViewProps> = ({
               { id: "pendentes", label: "Pendentes / Revisão" },
               { id: "orfao", label: "Órfãos" },
               { id: "confirmado", label: "Confirmados" },
+              { id: "ia_auto", label: "Confirmado pela IA" },
               { id: "rejeitado", label: "Rejeitados" },
               { id: "todos", label: "Todos" },
             ] as const
@@ -241,7 +249,7 @@ export const ReceiptsView: React.FC<ReceiptsViewProps> = ({
             type="text"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder="Buscar E2E, pagador, pedido..."
+            placeholder="Buscar código, E2E, pagador, pedido..."
             className="w-full pl-10 pr-3 py-2 rounded-full bg-[#121216] border border-[#1E1E26] text-xs text-white placeholder:text-zinc-600 focus:outline-none focus:border-[#FF7900]"
           />
         </div>
@@ -272,11 +280,22 @@ export const ReceiptsView: React.FC<ReceiptsViewProps> = ({
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0 space-y-1">
                     <div className="flex flex-wrap items-center gap-2">
+                      {rcp.code && (
+                        <span className="font-mono-tabular text-[11px] font-semibold px-2 py-0.5 rounded-md bg-[#18181F] border border-[#262630] text-zinc-200">
+                          #{rcp.code}
+                        </span>
+                      )}
                       <span
                         className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-[11px] font-semibold border ${badge.cls}`}
                       >
                         {badge.label}
                       </span>
+                      {rcp.autoConfirmed && (
+                        <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-semibold border bg-purple-500/15 text-purple-300 border-purple-500/40">
+                          <Bot className="w-3 h-3" />
+                          <span>Confirmado pela IA</span>
+                        </span>
+                      )}
                       {rcp.confidence !== null &&
                         rcp.confidence !== undefined && (
                           <span className="font-mono-tabular text-[11px] text-zinc-400">
@@ -427,6 +446,7 @@ export const ReceiptsView: React.FC<ReceiptsViewProps> = ({
                   Imagem do Comprovante
                 </h3>
                 <p className="text-xs text-zinc-400">
+                  {previewReceipt.code ? `#${previewReceipt.code} · ` : ""}
                   {previewReceipt.payerName || "Participante"} ·{" "}
                   {previewReceipt.e2e || "Sem E2E"}
                 </p>
@@ -482,6 +502,14 @@ export const ReceiptsView: React.FC<ReceiptsViewProps> = ({
             </div>
 
             <div className="rounded-xl bg-[#0D0D11] border border-[#1E1E26] p-3 text-xs text-zinc-300 space-y-1">
+              {linkingReceipt.code && (
+                <div>
+                  Comprovante:{" "}
+                  <strong className="font-mono-tabular text-white">
+                    #{linkingReceipt.code}
+                  </strong>
+                </div>
+              )}
               <div>
                 Pagador: <strong className="text-white">{linkingReceipt.payerName || "—"}</strong>
               </div>

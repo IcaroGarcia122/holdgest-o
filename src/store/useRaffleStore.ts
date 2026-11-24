@@ -39,7 +39,9 @@ const EMPTY_STATE: StoreState = {
     groupJid: "",
     outboundWebhookUrl: "",
     adminPhones: [],
-    autoConfirmWithAi: false,
+    aiMinConfidence: 0.9,
+    aiMaxAmount: 100,
+    aiMaxPerPhoneDay: 5,
   },
 };
 

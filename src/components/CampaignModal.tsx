@@ -361,11 +361,22 @@ export const CampaignModal: React.FC<CampaignModalProps> = ({
                 }
                 className="w-full px-3.5 py-2.5 rounded-xl bg-[#18181F] border border-[#262630] text-sm text-white focus:outline-none focus:border-[#FF7900]"
               >
-                <option value="manual">Manual (aprovação no painel)</option>
-                <option value="banco">Banco (E2E + webhook Pix)</option>
+                <option value="banco">Banco (Pix recebido)</option>
+                <option value="manual">Manual (admin confere)</option>
+                <option value="ia">IA (regras rígidas)</option>
               </select>
             </div>
           </div>
+
+          {confirmationMode === "ia" && (
+            <div className="flex items-start gap-2.5 p-3.5 rounded-xl bg-red-500/10 border border-red-500/45 text-xs text-red-300">
+              <AlertCircle className="w-4 h-4 text-red-400 shrink-0 mt-0.5" />
+              <span>
+                A IA pode ser enganada por comprovante falso bem feito. Confira
+                o resumo diário com o extrato do banco.
+              </span>
+            </div>
+          )}
 
           <div className="rounded-2xl bg-[#0D0D11] border border-[#1E1E26] p-4 space-y-3">
             <div className="flex flex-wrap items-center justify-between gap-2 pb-2 border-b border-[#1E1E26]">

@@ -158,7 +158,10 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
       });
     }
 
-    return sendJson(res, 201, { order: payload.order });
+    return sendJson(res, 201, {
+      order: payload.order,
+      payment: payload.payment ?? null,
+    });
   }
 
   return sendJson(res, 405, { error: "method_not_allowed" });

@@ -38,6 +38,11 @@ async function startServer() {
   app.set("trust proxy", 1);
   app.use(express.json({ limit: "15mb" }));
 
+  app.use(["/api/bot", "/api/admin"], (_req, res, next) => {
+    res.setHeader("Cache-Control", "no-store");
+    next();
+  });
+
   // Bot & Cron Routes (Bearer BOT_API_TOKEN)
   app.all("/api/bot/campaign", wrapHandler(botCampaignHandler));
   app.all("/api/bot/quotas", wrapHandler(botQuotasHandler));

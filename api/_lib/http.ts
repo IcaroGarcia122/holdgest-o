@@ -12,6 +12,7 @@ export interface ApiResponse extends ServerResponse {
 }
 
 export function sendJson(res: ApiResponse, statusCode: number, data: unknown): void {
+  res.setHeader("Cache-Control", "no-store");
   const statusFn = res.status;
   const jsonFn = res.json;
   if (typeof statusFn === "function" && typeof jsonFn === "function") {

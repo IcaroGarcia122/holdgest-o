@@ -192,7 +192,16 @@ curl -sS -X GET "$APP_URL/api/bot/admin/pending?actor=5543999999999" \
   -H "Authorization: Bearer $BOT_API_TOKEN"
 ```
 
-### 6.2 Aprovar comprovante (`POST /api/bot/admin/receipts/:ref/approve`)
+### 6.2 Listar reservas ainda não pagas da rifa ativa (`GET /api/bot/admin/unpaid?actor=`)
+
+Lista os pedidos da campanha ativa com `status = 'pendente'` (incluindo pagamentos parciais), ordenados do mais antigo para o mais novo, com telefone completo.
+
+```bash
+curl -sS -X GET "$APP_URL/api/bot/admin/unpaid?actor=5543999999999" \
+  -H "Authorization: Bearer $BOT_API_TOKEN"
+```
+
+### 6.3 Aprovar comprovante (`POST /api/bot/admin/receipts/:ref/approve`)
 
 ```bash
 curl -sS -X POST "$APP_URL/api/bot/admin/receipts/C3F9A/approve" \

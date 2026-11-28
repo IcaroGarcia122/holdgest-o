@@ -1,3 +1,4 @@
+import type { SupabaseClient } from "@supabase/supabase-js";
 import type { ApiRequest, ApiResponse } from "../_lib/http.js";
 import { getQueryParam, readJsonBody, sendJson } from "../_lib/http.js";
 import {
@@ -12,6 +13,7 @@ import {
   cancelOrderAction,
   linkReceiptAction,
   listPendingAdminItems,
+  listUnpaidAdminOrders,
   payOrderManualAction,
   rejectReceiptAction,
   revertOrderAction,
@@ -49,6 +51,8 @@ function extractAdminRoute(req: ApiRequest): {
       .filter(Boolean);
     if (tail[0] === "pending") {
       resource = "pending";
+    } else if (tail[0] === "unpaid") {
+      resource = "unpaid";
     } else if (tail.length >= 3) {
       resource = resource || tail[0];
       ref = ref || decodeURIComponent(tail[1]);
@@ -80,15 +84,21 @@ function sendActionResult(res: ApiResponse, result: AdminActionResult): void {
   });
 }
 
-export default async function handler(req: ApiRequest, res: ApiResponse) {
+export async function handleBotAdmin(
+  req: ApiRequest,
+  res: ApiResponse,
+  supabaseOverride?: SupabaseClient
+) {
   if (!verifyBotToken(req, res)) return;
-  if (!isSupabaseConfigured()) {
+  if (!supabaseOverride && !isSupabaseConfigured()) {
     return sendJson(res, 503, { error: "supabase_unconfigured" });
   }
 
   const route = extractAdminRoute(req);
 
   const isPendingRoute = route.resource === "pending";
+  const isUnpaidRoute = route.resource === "unpaid";
+  const isGetAdminRoute = isPendingRoute || isUnpaidRoute;
   const isReceiptActionRoute =
     route.resource === "receipts" &&
     Boolean(route.ref) &&
@@ -98,24 +108,24 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
     Boolean(route.ref) &&
     ["pay", "cancel", "revert"].includes(route.action);
 
-  if (!isPendingRoute && !isReceiptActionRoute && !isOrderActionRoute) {
+  if (!isGetAdminRoute && !isReceiptActionRoute && !isOrderActionRoute) {
     return sendJson(res, 404, {
       error: "not_found",
       message: "Rota administrativa do bot não encontrada.",
     });
   }
 
-  if (isPendingRoute && req.method !== "GET") {
+  if (isGetAdminRoute && req.method !== "GET") {
     return sendJson(res, 405, { error: "method_not_allowed" });
   }
-  if (!isPendingRoute && req.method !== "POST") {
+  if (!isGetAdminRoute && req.method !== "POST") {
     return sendJson(res, 405, { error: "method_not_allowed" });
   }
 
   let body: Record<string, unknown> = {};
   let rawActor: unknown;
 
-  if (isPendingRoute) {
+  if (isGetAdminRoute) {
     rawActor = getQueryParam(req, "actor");
   } else {
     try {
@@ -134,7 +144,7 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
     return;
   }
 
-  const supabase = getSupabaseAdmin();
+  const supabase = supabaseOverride ?? getSupabaseAdmin();
   const auth = await verifyBotAdminActor(supabase, rawActor);
   if (!auth.ok) {
     return sendJson(res, auth.status, {
@@ -154,6 +164,20 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
     return sendJson(res, 200, {
       items: pendingRes.items,
       count: pendingRes.items.length,
+    });
+  }
+
+  if (isUnpaidRoute) {
+    const unpaidRes = await listUnpaidAdminOrders(supabase);
+    if (!unpaidRes.ok) {
+      return sendJson(res, unpaidRes.status, {
+        error: unpaidRes.error,
+        message: unpaidRes.message,
+      });
+    }
+    return sendJson(res, 200, {
+      count: unpaidRes.items.length,
+      items: unpaidRes.items,
     });
   }
 
@@ -219,4 +243,8 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
   }
 
   return sendJson(res, 404, { error: "not_found" });
+}
+
+export default async function handler(req: ApiRequest, res: ApiResponse) {
+  return handleBotAdmin(req, res);
 }

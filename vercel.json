@@ -29,6 +29,10 @@
       "destination": "/api/bot/admin?resource=pending"
     },
     {
+      "source": "/api/bot/admin/unpaid",
+      "destination": "/api/bot/admin?resource=unpaid"
+    },
+    {
       "source": "/api/bot/admin/receipts/:ref/:action",
       "destination": "/api/bot/admin?resource=receipts&ref=:ref&action=:action"
     },

@@ -143,6 +143,17 @@ export interface PendingAdminItem {
   createdAt: string;
 }
 
+export interface UnpaidAdminOrderItem {
+  orderCode: string;
+  buyerName: string;
+  phone: string;
+  quotas: number[];
+  totalAmount: number;
+  paidAmount: number;
+  createdAt: string;
+  expiresAt: string | null;
+}
+
 export type AdminActionResultName =
   | "confirmado"
   | "parcial"
@@ -461,6 +472,75 @@ export async function listPendingAdminItems(
   }
 
   items.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  return { ok: true, items };
+}
+
+export async function listUnpaidAdminOrders(
+  supabase: SupabaseClient
+): Promise<
+  | { ok: true; items: UnpaidAdminOrderItem[] }
+  | AdminActionFailure
+> {
+  const { data: camp, error: campErr } = await supabase
+    .from("campaigns")
+    .select("id")
+    .eq("status", "ativa")
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (campErr) {
+    return {
+      ok: false,
+      status: 500,
+      error: "db_error",
+      message: campErr.message,
+    };
+  }
+
+  if (!camp) {
+    return { ok: true, items: [] };
+  }
+
+  const { data: orders, error: ordErr } = await supabase
+    .from("orders")
+    .select(
+      "code, buyer_name, buyer_phone, quotas, total_amount, paid_amount, created_at, expires_at"
+    )
+    .eq("campaign_id", camp.id)
+    .eq("status", "pendente")
+    .order("created_at", { ascending: true });
+
+  if (ordErr) {
+    return {
+      ok: false,
+      status: 500,
+      error: "db_error",
+      message: ordErr.message,
+    };
+  }
+
+  const items: UnpaidAdminOrderItem[] = (orders ?? [])
+    .filter((o) => {
+      const total = Number(o.total_amount || 0);
+      const paid = Number(o.paid_amount || 0);
+      return total <= 0 || paid < total;
+    })
+    .map((o) => ({
+      orderCode: String(o.code || ""),
+      buyerName: String(o.buyer_name || ""),
+      phone: String(o.buyer_phone || ""),
+      quotas: Array.isArray(o.quotas) ? o.quotas.map(Number) : [],
+      totalAmount: Number(o.total_amount || 0),
+      paidAmount: Number(o.paid_amount || 0),
+      createdAt: String(o.created_at),
+      expiresAt: o.expires_at ? String(o.expires_at) : null,
+    }));
+
+  items.sort(
+    (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
+  );
+
   return { ok: true, items };
 }
 

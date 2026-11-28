@@ -53,6 +53,7 @@ async function startServer() {
   app.all("/api/bot/receipts", wrapHandler(botReceiptsHandler));
   app.all("/api/bot/pix", wrapHandler(botPixHandler));
   app.all("/api/bot/admin/pending", wrapHandler(botAdminHandler));
+  app.all("/api/bot/admin/unpaid", wrapHandler(botAdminHandler));
   app.all("/api/bot/admin/:resource/:ref/:action", wrapHandler(botAdminHandler));
   app.all("/api/bot/summary/daily", wrapHandler(botSummaryDailyHandler));
   app.all("/api/cron/expire", wrapHandler(cronExpireHandler));

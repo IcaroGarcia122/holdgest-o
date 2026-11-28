@@ -17,6 +17,7 @@ import {
   verifyBotAdminActor,
 } from "../api/_lib/raffleEngine.js";
 import { handleSummaryDaily } from "../api/bot/summary/daily.js";
+import { handleBotAdmin } from "../api/bot/admin.js";
 
 function makeEngine(confirmationMode: "banco" | "manual" = "banco") {
   const engine = new RaffleEngine();
@@ -625,6 +626,10 @@ function createFakeSupabase() {
     private patch: Record<string, unknown> = {};
     private headOnly = false;
 
+    private orderCol: string | null = null;
+    private orderAsc = true;
+    private limitCount: number | null = null;
+
     constructor(table: string) {
       this.table = table;
     }
@@ -667,17 +672,33 @@ function createFakeSupabase() {
       this.filters.push((r) => r[col] !== val && r[col] !== undefined);
       return this;
     }
-    order() {
+    order(col?: string, opts?: { ascending?: boolean }) {
+      this.orderCol = col ?? null;
+      this.orderAsc = opts?.ascending !== false;
+      return this;
+    }
+    limit(n: number) {
+      this.limitCount = n;
       return this;
     }
     private execute() {
       const rows = db[this.table] ?? [];
-      const matched = rows.filter((r) => this.filters.every((f) => f(r)));
+      let matched = rows.filter((r) => this.filters.every((f) => f(r)));
       if (this.op === "update") {
         for (const row of matched) {
           Object.assign(row, this.patch);
         }
         return { data: matched, count: matched.length, error: null };
+      }
+      if (this.orderCol) {
+        const col = this.orderCol;
+        const dir = this.orderAsc ? 1 : -1;
+        matched = [...matched].sort(
+          (a, b) => String(a[col] ?? "").localeCompare(String(b[col] ?? "")) * dir
+        );
+      }
+      if (this.limitCount !== null) {
+        matched = matched.slice(0, this.limitCount);
       }
       if (this.headOnly) {
         return { data: null, count: matched.length, error: null };
@@ -1058,6 +1079,169 @@ test("16. Resposta de /api/bot/receipts inclui autoConfirmed e receiptCode", () 
   assert.equal(manualRes.autoConfirmed, false);
   assert.equal(manualRes.receiptCode, "C9Z8Y");
 });
+
+test("17. GET /api/bot/admin/unpaid: não-admin recebe 403; admin recebe pendentes da rifa ativa ordenados do mais antigo ao mais novo", async () => {
+  const prevToken = process.env.BOT_API_TOKEN;
+  process.env.BOT_API_TOKEN = "test-bot-secret-token";
+
+  const { client, db } = createFakeSupabase();
+  db.campaigns = [
+    {
+      id: "camp-old",
+      reservation_minutes: 30,
+      status: "encerrada",
+      created_at: "2026-11-01T10:00:00Z",
+    },
+    {
+      id: "camp-1",
+      reservation_minutes: 30,
+      status: "ativa",
+      created_at: "2026-11-27T10:00:00Z",
+    },
+  ];
+  // Inseridos propositalmente fora de ordem cronológica e com vários status
+  db.orders = [
+    {
+      id: "ord-partial",
+      code: "RA075",
+      campaign_id: "camp-1",
+      buyer_name: "Bruno Dias",
+      buyer_phone: "5543977776666",
+      quotas: [20],
+      total_amount: 10,
+      paid_amount: 4,
+      status: "pendente",
+      created_at: "2026-11-27T21:00:00Z",
+      expires_at: "2026-11-28T21:00:00Z",
+    },
+    {
+      id: "ord-paid",
+      code: "RA070",
+      campaign_id: "camp-1",
+      buyer_name: "Pago",
+      buyer_phone: "5543911110000",
+      quotas: [1],
+      total_amount: 2,
+      paid_amount: 2,
+      status: "pago",
+      created_at: "2026-11-27T18:00:00Z",
+      expires_at: "2026-11-28T18:00:00Z",
+    },
+    {
+      id: "ord-cancel",
+      code: "RA071",
+      campaign_id: "camp-1",
+      buyer_name: "Cancelado",
+      buyer_phone: "5543922220000",
+      quotas: [2],
+      total_amount: 2,
+      paid_amount: 0,
+      status: "cancelado",
+      created_at: "2026-11-27T18:30:00Z",
+      expires_at: "2026-11-28T18:30:00Z",
+    },
+    {
+      id: "ord-exp",
+      code: "RA072",
+      campaign_id: "camp-1",
+      buyer_name: "Expirado",
+      buyer_phone: "5543933330000",
+      quotas: [3],
+      total_amount: 2,
+      paid_amount: 0,
+      status: "expirado",
+      created_at: "2026-11-27T19:00:00Z",
+      expires_at: "2026-11-27T19:30:00Z",
+    },
+    {
+      id: "ord-closed-camp",
+      code: "RA073",
+      campaign_id: "camp-old",
+      buyer_name: "Campanha Encerrada",
+      buyer_phone: "5543944440000",
+      quotas: [4],
+      total_amount: 2,
+      paid_amount: 0,
+      status: "pendente",
+      created_at: "2026-11-27T19:15:00Z",
+      expires_at: "2026-11-28T19:15:00Z",
+    },
+    {
+      id: "ord-oldest",
+      code: "RA074",
+      campaign_id: "camp-1",
+      buyer_name: "Ana Lima",
+      buyer_phone: "5543988887777",
+      quotas: [12, 15],
+      total_amount: 2,
+      paid_amount: 0,
+      status: "pendente",
+      created_at: "2026-11-27T20:00:43Z",
+      expires_at: "2026-11-28T20:00:43Z",
+    },
+  ];
+
+  try {
+    // Não-admin -> 403 { error: "not_admin" }
+    const nonAdminReq = {
+      method: "GET",
+      url: "/api/bot/admin/unpaid?actor=5511000000000",
+      headers: { authorization: "Bearer test-bot-secret-token" },
+      ip: "127.0.0.1",
+    } as unknown as ApiRequest;
+    const nonAdminRes = createMockRes();
+    await handleBotAdmin(nonAdminReq, nonAdminRes.res, client);
+    assert.equal(nonAdminRes.getStatus(), 403);
+    assert.equal(nonAdminRes.getHeaders()["Cache-Control"], "no-store");
+    assert.equal(nonAdminRes.getBody().error, "not_admin");
+
+    // Admin autenticado -> 200 com count=2 ordenados do mais antigo ao mais novo
+    const adminReq = {
+      method: "GET",
+      url: "/api/bot/admin/unpaid?actor=5543999999999",
+      headers: { authorization: "Bearer test-bot-secret-token" },
+      ip: "127.0.0.1",
+    } as unknown as ApiRequest;
+    const adminRes = createMockRes();
+    await handleBotAdmin(adminReq, adminRes.res, client);
+    assert.equal(adminRes.getStatus(), 200);
+    assert.equal(adminRes.getHeaders()["Cache-Control"], "no-store");
+
+    const body = adminRes.getBody() as {
+      count: number;
+      items: Array<Record<string, unknown>>;
+    };
+    assert.equal(body.count, 2);
+    assert.equal(body.items.length, 2);
+    assert.deepEqual(body.items[0], {
+      orderCode: "RA074",
+      buyerName: "Ana Lima",
+      phone: "5543988887777",
+      quotas: [12, 15],
+      totalAmount: 2,
+      paidAmount: 0,
+      createdAt: "2026-11-27T20:00:43Z",
+      expiresAt: "2026-11-28T20:00:43Z",
+    });
+    assert.deepEqual(body.items[1], {
+      orderCode: "RA075",
+      buyerName: "Bruno Dias",
+      phone: "5543977776666",
+      quotas: [20],
+      totalAmount: 10,
+      paidAmount: 4,
+      createdAt: "2026-11-27T21:00:00Z",
+      expiresAt: "2026-11-28T21:00:00Z",
+    });
+  } finally {
+    if (prevToken === undefined) {
+      delete process.env.BOT_API_TOKEN;
+    } else {
+      process.env.BOT_API_TOKEN = prevToken;
+    }
+  }
+});
+
 
 
 
